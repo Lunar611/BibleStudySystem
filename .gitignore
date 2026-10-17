@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+application-local.properties
+*.log
+bible-api.zip
+
+**/.git-backup/
+
+**/.git-backup-original/
+**/.git-backup/
