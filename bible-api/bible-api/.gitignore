@@ -7,12 +7,6 @@ Thumbs.db
 # Java / Maven
 target/
 .mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
-
-# Frontend
-node_modules/
-dist/
 
 # Environment variables and secrets
 .env
@@ -22,14 +16,12 @@ application-local.properties
 
 # IntelliJ IDEA
 .idea/
-**/.idea/
 *.iws
 *.iml
 *.ipr
 
 # VS Code
 .vscode/
-**/.vscode/
 
 # Eclipse / Spring Tool Suite
 .apt_generated/
@@ -47,12 +39,10 @@ application-local.properties
 /nbdist/
 /.nb-gradle/
 build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
 # Git backup directories
-**/.git-backup/
-**/.git-backup-original/
+.git-backup/
+.git-backup-original/
 
-# Project archive
+# Project archives
 bible-api.zip
