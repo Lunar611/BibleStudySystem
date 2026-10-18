@@ -1,5 +1,6 @@
 package com.bible.bible_api.controller;
 
+import com.bible.bible_api.dto.BibleSearchPageResponse;
 import com.bible.bible_api.dto.BibleChapterResponse;
 import com.bible.bible_api.dto.BibleChapterSummary;
 import com.bible.bible_api.dto.BibleSearchResult;
@@ -69,14 +70,24 @@ public class BibleController {
     }
 
     // GET /api/search?translation=KJV&query=love
+
     @GetMapping("/search")
-    public List<BibleSearchResult> searchVerses(
+    public BibleSearchPageResponse searchVerses(
             @RequestParam(defaultValue = "KJV") String translation,
-            @RequestParam(name = "query") String keyword
+            @RequestParam(name = "query") String keyword,
+            @RequestParam(defaultValue = "") String book,
+            @RequestParam(defaultValue = "false") boolean exactPhrase,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size
     ) {
         return bibleService.searchVerses(
                 translation,
-                keyword
+                keyword,
+                book,
+                exactPhrase,
+                page,
+                size
         );
     }
+
 }

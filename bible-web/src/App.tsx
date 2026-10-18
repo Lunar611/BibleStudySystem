@@ -1,4 +1,3 @@
-
 import { useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 
@@ -40,17 +39,86 @@ type BibleSearchResult = {
   verseText: string
 }
 
+type BibleSearchPageResponse = {
+  results: BibleSearchResult[]
+  totalResults: number
+  currentPage: number
+  pageSize: number
+  totalPages: number
+}
+
+type SavedVerse = {
+  key: string
+  translation: string
+  book: string
+  chapterNumber: number
+  verseNumber: number
+  verseText: string
+  note: string
+}
+
+const SAVED_VERSES_KEY = 'word-and-wisdom-saved-verses'
+const READING_PROGRESS_KEY = 'word-and-wisdom-reading-progress'
+
+type ReadChapter = { key: string; translation: string; book: string; chapterNumber: number; readAt: string }
+
+function loadReadingProgress(): ReadChapter[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(READING_PROGRESS_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is ReadChapter => item && typeof item.key === 'string' && typeof item.translation === 'string' && typeof item.book === 'string' && typeof item.chapterNumber === 'number' && typeof item.readAt === 'string')
+  } catch { return [] }
+}
+
+function getProgressKey(translation: string, book: string, chapterNumber: number) {
+  return `${translation}|${book}|${chapterNumber}`
+}
+
+function loadSavedVerses(): SavedVerse[] {
+  try {
+    const stored = localStorage.getItem(SAVED_VERSES_KEY)
+
+    if (!stored) return []
+
+    const parsed: unknown = JSON.parse(stored)
+
+    if (!Array.isArray(parsed)) return []
+
+    return parsed.filter(
+      (item): item is SavedVerse =>
+        item !== null &&
+        typeof item === 'object' &&
+        typeof item.key === 'string' &&
+        typeof item.translation === 'string' &&
+        typeof item.book === 'string' &&
+        typeof item.chapterNumber === 'number' &&
+        typeof item.verseNumber === 'number' &&
+        typeof item.verseText === 'string' &&
+        typeof item.note === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
 function App() {
   const [translations, setTranslations] = useState<Translation[]>([])
   const [books, setBooks] = useState<Book[]>([])
   const [translation, setTranslation] = useState('KJV')
   const [book, setBook] = useState('Genesis')
   const [chapter, setChapter] = useState(1)
+  const [chapterInput, setChapterInput] = useState('1')
+
   const [chapterCount, setChapterCount] = useState(0)
+  const [chapterTotals, setChapterTotals] = useState<Record<string, number>>({})
   const [verses, setVerses] = useState<Verse[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [darkMode, setDarkMode] = useState(false)
+
+  // Verse range selection
+  const [verseFrom, setVerseFrom] = useState('')
+  const [verseTo, setVerseTo] = useState('')
 
   // Bible search state
   const [searchQuery, setSearchQuery] = useState('')
@@ -58,6 +126,43 @@ function App() {
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [hasSearched, setHasSearched] = useState(false)
+
+  // Advanced search filters and pagination
+  const [searchBook, setSearchBook] = useState('')
+  const [exactPhrase, setExactPhrase] = useState(false)
+  const [searchPage, setSearchPage] = useState(0)
+  const [totalResults, setTotalResults] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+
+  // Bookmarks and personal notes
+  const [savedVerses, setSavedVerses] =
+    useState<SavedVerse[]>(loadSavedVerses)
+  const [showSavedVerses, setShowSavedVerses] = useState(false)
+  const [readingProgress, setReadingProgress] = useState<ReadChapter[]>(loadReadingProgress)
+  const [showReadingProgress, setShowReadingProgress] = useState(false)
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  const [saveReference, setSaveReference] = useState('')
+  const [saveReferenceError, setSaveReferenceError] = useState('')
+  const [saveReferenceStatus, setSaveReferenceStatus] = useState('')
+
+  // Save bookmarks and notes whenever they change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAVED_VERSES_KEY, JSON.stringify(savedVerses))
+    } catch {
+      setError('Could not save your bookmarks in this browser.')
+    }
+  }, [savedVerses])
+
+  useEffect(() => {
+    try { localStorage.setItem(READING_PROGRESS_KEY, JSON.stringify(readingProgress)) }
+    catch { setError('Could not save reading progress in this browser.') }
+  }, [readingProgress])
+
+  // Keep the displayed chapter number synchronized with navigation.
+  useEffect(() => {
+    setChapterInput(String(chapter))
+  }, [chapter])
 
   // Load translations and books.
   useEffect(() => {
@@ -78,10 +183,7 @@ function App() {
           await translationResponse.json()
         const bookData: Book[] = await bookResponse.json()
 
-        if (
-          !Array.isArray(translationData) ||
-          !Array.isArray(bookData)
-        ) {
+        if (!Array.isArray(translationData) || !Array.isArray(bookData)) {
           throw new Error('Invalid Bible options response.')
         }
 
@@ -100,8 +202,7 @@ function App() {
 
         if (bookData.length > 0) {
           const defaultBook =
-            bookData.find((item) => item.name === 'Genesis') ??
-            bookData[0]
+            bookData.find((item) => item.name === 'Genesis') ?? bookData[0]
 
           setBook(defaultBook.name)
         }
@@ -119,7 +220,33 @@ function App() {
     }
   }, [])
 
-  // Retrieve the available chapters for the selected book.
+  // Load the real chapter count for every book so progress percentages use the Bible data.
+  useEffect(() => {
+    if (books.length === 0 || !translation) return
+    let cancelled = false
+
+    async function loadAllChapterTotals() {
+      const entries = await Promise.all(books.map(async (item) => {
+        try {
+          const response = await fetch(
+            `/api/translations/${encodeURIComponent(translation)}` +
+              `/books/${encodeURIComponent(item.name)}/chapters`,
+          )
+          if (!response.ok) return [item.name, 0] as const
+          const data: ChapterSummary[] = await response.json()
+          return [item.name, Array.isArray(data) ? data.length : 0] as const
+        } catch {
+          return [item.name, 0] as const
+        }
+      }))
+      if (!cancelled) setChapterTotals(Object.fromEntries(entries))
+    }
+
+    loadAllChapterTotals()
+    return () => { cancelled = true }
+  }, [books, translation])
+
+  // Retrieve chapters for the selected book.
   useEffect(() => {
     if (!translation || !book) return
 
@@ -237,42 +364,187 @@ function App() {
     return () => controller.abort()
   }, [translation, book, chapter])
 
-  // Search Bible verses using the Spring Boot API.
-  async function searchBible(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  // Create a consistent key for each verse and translation.
+  function getVerseKey(
+    verseTranslation: string,
+    verseBook: string,
+    verseChapter: number,
+    verseNumber: number,
+  ) {
+    return `${verseTranslation}|${verseBook}|${verseChapter}|${verseNumber}`
+  }
 
+  // Save verses by typing a reference such as "John 3:16" or "Psalm 23:1-3".
+  async function saveTypedReference(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaveReferenceError('')
+    setSaveReferenceStatus('')
+
+    const input = saveReference.trim()
+    const match = input.match(/^(.+?)\s+(\d+)\s*:\s*(\d+)(?:\s*-\s*(\d+))?$/)
+
+    if (!match) {
+      setSaveReferenceError('Enter a reference like John 3:16 or Psalm 23:1-3.')
+      return
+    }
+
+    const typedBook = match[1].trim()
+    const chapterNumber = Number(match[2])
+    const startVerse = Number(match[3])
+    const endVerse = Number(match[4] ?? match[3])
+    const matchingBook = books.find(
+      (item) => item.name.toLowerCase() === typedBook.toLowerCase(),
+    )
+
+    if (!matchingBook) {
+      setSaveReferenceError(`I couldn't find the Bible book "${typedBook}".`)
+      return
+    }
+
+    if (
+      !Number.isInteger(chapterNumber) || chapterNumber < 1 ||
+      !Number.isInteger(startVerse) || startVerse < 1 ||
+      !Number.isInteger(endVerse) || endVerse < startVerse
+    ) {
+      setSaveReferenceError('Enter a valid chapter and verse range.')
+      return
+    }
+
+    try {
+      const chapterResponse = await fetch(
+        `/api/translations/${encodeURIComponent(translation)}` +
+          `/books/${encodeURIComponent(matchingBook.name)}/chapters/${chapterNumber}`,
+      )
+
+      if (!chapterResponse.ok) {
+        throw new Error(`${matchingBook.name} ${chapterNumber} was not found in ${translation}.`)
+      }
+
+      const chapterData: Chapter = await chapterResponse.json()
+      const versesResponse = await fetch(`/api/chapters/${chapterData.id}/verses`)
+
+      if (!versesResponse.ok) {
+        throw new Error('Could not retrieve the verses for that reference.')
+      }
+
+      const chapterVerses: Verse[] = await versesResponse.json()
+      if (!Array.isArray(chapterVerses) || chapterVerses.length === 0) {
+        throw new Error('No verses were found for that chapter.')
+      }
+
+      if (endVerse > chapterVerses.length) {
+        throw new Error(`That chapter only has ${chapterVerses.length} verses.`)
+      }
+
+      const selectedVerses = chapterVerses.filter(
+        (verse) => verse.verseNumber >= startVerse && verse.verseNumber <= endVerse,
+      )
+      const existingKeys = new Set(savedVerses.map((saved) => saved.key))
+      const newSavedVerses: SavedVerse[] = selectedVerses
+        .filter((verse) => !existingKeys.has(
+          getVerseKey(translation, matchingBook.name, chapterNumber, verse.verseNumber),
+        ))
+        .map((verse) => ({
+          key: getVerseKey(translation, matchingBook.name, chapterNumber, verse.verseNumber),
+          translation,
+          book: matchingBook.name,
+          chapterNumber,
+          verseNumber: verse.verseNumber,
+          verseText: verse.verseText,
+          note: '',
+        }))
+
+      if (newSavedVerses.length === 0) {
+        setSaveReferenceStatus('Those verses are already in your Personal Study.')
+      } else {
+        setSavedVerses((current) => [...current, ...newSavedVerses])
+        setSaveReferenceStatus(
+          `Saved ${newSavedVerses.length} verse${newSavedVerses.length === 1 ? '' : 's'} from ${matchingBook.name} ${chapterNumber}:${startVerse}${endVerse !== startVerse ? `-${endVerse}` : ''}.`,
+        )
+      }
+      setSaveReference('')
+    } catch (err) {
+      setSaveReferenceError(
+        err instanceof Error ? err.message : 'Could not save that Bible reference.',
+      )
+    }
+  }
+
+  // Update a note for a saved verse.
+  function updateNote(key: string, note: string) {
+    setSavedVerses((current) =>
+      current.map((saved) =>
+        saved.key === key ? { ...saved, note } : saved,
+      ),
+    )
+  }
+
+  // Open a bookmarked verse in the reader.
+  function openSavedVerse(saved: SavedVerse) {
+    setTranslation(saved.translation)
+    setBook(saved.book)
+    setChapter(saved.chapterNumber)
+    setChapterInput(String(saved.chapterNumber))
+    setVerseFrom(String(saved.verseNumber))
+    setVerseTo(String(saved.verseNumber))
+    setError('')
+    setShowSavedVerses(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  // Search Bible verses with filters and pagination.
+  async function runBibleSearch(pageNumber: number) {
     const keyword = searchQuery.trim()
 
     if (!keyword) {
       setSearchError('Enter a word or phrase to search.')
       setSearchResults([])
+      setTotalResults(0)
+      setTotalPages(0)
       setHasSearched(false)
       return
     }
 
     setSearchLoading(true)
     setSearchError('')
-    setSearchResults([])
     setHasSearched(true)
 
     try {
-      const response = await fetch(
-        `/api/search?translation=${encodeURIComponent(translation)}` +
-          `&query=${encodeURIComponent(keyword)}`,
-      )
+      const params = new URLSearchParams({
+        translation,
+        query: keyword,
+        book: searchBook,
+        exactPhrase: String(exactPhrase),
+        page: String(pageNumber),
+        size: '20',
+      })
+
+      const response = await fetch(`/api/search?${params.toString()}`)
 
       if (!response.ok) {
         throw new Error('Could not search the Bible. Please try again.')
       }
 
-      const data: unknown = await response.json()
+      const data: BibleSearchPageResponse = await response.json()
 
-      if (!Array.isArray(data)) {
+      if (
+        !data ||
+        !Array.isArray(data.results) ||
+        typeof data.totalResults !== 'number' ||
+        typeof data.currentPage !== 'number' ||
+        typeof data.totalPages !== 'number'
+      ) {
         throw new Error('The server returned an invalid search response.')
       }
 
-      setSearchResults(data as BibleSearchResult[])
+      setSearchResults(data.results)
+      setTotalResults(data.totalResults)
+      setTotalPages(data.totalPages)
+      setSearchPage(data.currentPage)
     } catch (err) {
+      setSearchResults([])
+      setTotalResults(0)
+      setTotalPages(0)
       setSearchError(
         err instanceof Error
           ? err.message
@@ -283,10 +555,19 @@ function App() {
     }
   }
 
-  // Open the chapter containing a selected search result.
+  async function searchBible(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await runBibleSearch(0)
+  }
+
+  // Open a search result at its specific verse.
   function openSearchResult(result: BibleSearchResult) {
+    setTranslation(result.translation || translation)
     setBook(result.book)
     setChapter(result.chapterNumber)
+    setChapterInput(String(result.chapterNumber))
+    setVerseFrom(String(result.verseNumber))
+    setVerseTo(String(result.verseNumber))
     setError('')
     setSearchResults([])
     setHasSearched(false)
@@ -295,18 +576,81 @@ function App() {
   function changeBook(newBook: string) {
     setBook(newBook)
     setChapter(1)
+    setChapterInput('1')
+    setVerseFrom('')
+    setVerseTo('')
+    setError('')
   }
 
   function changeTranslation(newTranslation: string) {
     setTranslation(newTranslation)
     setChapter(1)
+    setChapterInput('1')
+    setVerseFrom('')
+    setVerseTo('')
     setSearchResults([])
     setHasSearched(false)
     setSearchError('')
+    setTotalResults(0)
+    setTotalPages(0)
+    setSearchPage(0)
   }
+
+  function applyChapterInput() {
+    const trimmedValue = chapterInput.trim()
+    const value = Number(trimmedValue)
+
+    if (
+      trimmedValue !== '' &&
+      Number.isInteger(value) &&
+      value >= 1 &&
+      value <= chapterCount
+    ) {
+      setChapter(value)
+      setChapterInput(String(value))
+      setVerseFrom('')
+      setVerseTo('')
+    } else {
+      setChapterInput(String(chapter))
+    }
+  }
+
+  // Validate verse range.
+  const verseRangeStart = verseFrom.trim() === '' ? null : Number(verseFrom)
+  const verseRangeEnd = verseTo.trim() === '' ? null : Number(verseTo)
+
+  const verseRangeInvalid =
+    (verseRangeStart !== null &&
+      (!Number.isInteger(verseRangeStart) ||
+        verseRangeStart < 1 ||
+        verseRangeStart > verses.length)) ||
+    (verseRangeEnd !== null &&
+      (!Number.isInteger(verseRangeEnd) ||
+        verseRangeEnd < 1 ||
+        verseRangeEnd > verses.length)) ||
+    (verseRangeStart !== null &&
+      verseRangeEnd !== null &&
+      verseRangeStart > verseRangeEnd)
+
+  const filteredVerses = verseRangeInvalid
+    ? []
+    : verseFrom.trim() === '' && verseTo.trim() === ''
+      ? verses
+      : verses.filter((verse) => {
+          const start = verseRangeStart ?? verseRangeEnd!
+          const end = verseRangeEnd ?? verseRangeStart!
+
+          return (
+            verse.verseNumber >= start &&
+            verse.verseNumber <= end
+          )
+        })
 
   async function goPrevious() {
     if (loading) return
+
+    setVerseFrom('')
+    setVerseTo('')
 
     if (chapter > 1) {
       setChapter((current) => current - 1)
@@ -337,15 +681,17 @@ function App() {
 
       setBook(previousBook.name)
       setChapter(data.length)
+      setChapterInput(String(data.length))
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Navigation failed.',
-      )
+      setError(err instanceof Error ? err.message : 'Navigation failed.')
     }
   }
 
   function goNext() {
     if (loading || chapterCount === 0) return
+
+    setVerseFrom('')
+    setVerseTo('')
 
     if (chapter < chapterCount) {
       setChapter((current) => current + 1)
@@ -358,11 +704,36 @@ function App() {
     if (nextBook) {
       setBook(nextBook.name)
       setChapter(1)
+      setChapterInput('1')
     }
   }
 
+  const currentProgressKey = getProgressKey(translation, book, chapter)
+  const currentChapterRead = readingProgress.some((item) => item.key === currentProgressKey)
+  const currentTranslationProgress = readingProgress.filter((item) => item.translation === translation)
+
+  function toggleCurrentChapterRead() {
+    if (currentChapterRead) {
+      setReadingProgress((current) => current.filter((item) => item.key !== currentProgressKey))
+    } else {
+      setReadingProgress((current) => [...current, { key: currentProgressKey, translation, book, chapterNumber: chapter, readAt: new Date().toISOString() }])
+    }
+  }
+
+  function markBookReadProgress(bookName: string, total: number) {
+    const chapterNumbers = Array.from({ length: total }, (_, index) => index + 1)
+    setReadingProgress((current) => {
+      const withoutBook = current.filter((item) => !(item.translation === translation && item.book === bookName))
+      const alreadyRead = current.filter((item) => item.translation === translation && item.book === bookName)
+      if (alreadyRead.length === total) return withoutBook
+      return [...withoutBook, ...chapterNumbers.map((chapterNumber) => ({ key: getProgressKey(translation, bookName, chapterNumber), translation, book: bookName, chapterNumber, readAt: new Date().toISOString() }))]
+    })
+  }
+
   const bookIndex = books.findIndex((item) => item.name === book)
+
   const isFirstChapter = chapter <= 1 && bookIndex <= 0
+
   const isLastChapter =
     chapterCount > 0 &&
     chapter >= chapterCount &&
@@ -399,6 +770,7 @@ function App() {
           <label className="field-label" htmlFor="translation">
             Translation
           </label>
+
           <select
             id="translation"
             className="field-control"
@@ -416,6 +788,7 @@ function App() {
           <label className="field-label" htmlFor="book">
             Book
           </label>
+
           <select
             id="book"
             className="field-control"
@@ -433,6 +806,7 @@ function App() {
           <label className="field-label" htmlFor="chapter">
             Chapter
           </label>
+
           <input
             id="chapter"
             className="field-control"
@@ -440,20 +814,13 @@ function App() {
             min="1"
             max={chapterCount || undefined}
             step="1"
-            value={chapter}
-            onChange={(event) => {
-              const rawValue = event.target.value
-
-              if (rawValue === '') return
-
-              const value = Number(rawValue)
-
-              if (
-                Number.isInteger(value) &&
-                value >= 1 &&
-                (chapterCount === 0 || value <= chapterCount)
-              ) {
-                setChapter(value)
+            value={chapterInput}
+            onChange={(event) => setChapterInput(event.target.value)}
+            onBlur={applyChapterInput}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                event.currentTarget.blur()
               }
             }}
             disabled={chapterCount === 0}
@@ -471,20 +838,14 @@ function App() {
 
           <button
             className="sidebar-link"
-            onClick={() => {
-              setBook('Genesis')
-              setChapter(1)
-            }}
+            onClick={() => changeBook('Genesis')}
           >
             <span>⌂</span> Beginning
           </button>
 
           <button
             className="sidebar-link"
-            onClick={() => {
-              setBook('Psalms')
-              setChapter(1)
-            }}
+            onClick={() => changeBook('Psalms')}
             disabled={!books.some((item) => item.name === 'Psalms')}
           >
             <span>♫</span> Psalms
@@ -492,13 +853,26 @@ function App() {
 
           <button
             className="sidebar-link"
-            onClick={() => {
-              setBook('John')
-              setChapter(1)
-            }}
+            onClick={() => changeBook('John')}
             disabled={!books.some((item) => item.name === 'John')}
           >
             <span>✧</span> Gospel of John
+          </button>
+
+          <div className="sidebar-divider" />
+
+          <p className="sidebar-heading">PERSONAL STUDY</p>
+
+          <button
+            className="sidebar-link"
+            onClick={() => setShowSavedVerses((current) => !current)}
+          >
+            <span>★</span>
+            Saved Verses
+          </button>
+
+          <button className="sidebar-link" onClick={() => setShowReadingProgress(true)}>
+            <span>✓</span> Reading Progress
           </button>
         </aside>
 
@@ -511,9 +885,149 @@ function App() {
             </p>
           </div>
 
-          {/* Bible search */}
+          {/* Personal Study opens in its own overlay so it does not crowd the reader. */}
+          {showSavedVerses && (
+            <div
+              className="personal-study-overlay"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setShowSavedVerses(false)
+              }}
+            >
+              <section
+                className="personal-study-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="personal-study-title"
+              >
+                <div className="personal-study-modal-header">
+                  <div>
+                    <p className="eyebrow">WORD &amp; WISDOM</p>
+                    <h2 id="personal-study-title">Personal Study</h2>
+                    <p>Save passages and keep your personal reflections in one place.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="nav-button"
+                    onClick={() => setShowSavedVerses(false)}
+                    aria-label="Close Personal Study"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <form className="save-reference-form" onSubmit={saveTypedReference}>
+                  <label className="field-label" htmlFor="save-reference">Bible reference</label>
+                  <div className="save-reference-controls">
+                    <input
+                      id="save-reference"
+                      className="search-input"
+                      type="text"
+                      value={saveReference}
+                      onChange={(event) => {
+                        setSaveReference(event.target.value)
+                        setSaveReferenceError('')
+                        setSaveReferenceStatus('')
+                      }}
+                      placeholder="e.g. John 3:16 or Psalm 23:1-3"
+                      aria-describedby="save-reference-help"
+                    />
+                    <button className="search-button" type="submit">Save passage</button>
+                  </div>
+                  <p id="save-reference-help" className="save-reference-help">
+                    Enter Book Chapter:Verse or Book Chapter:Start-End. The selected translation is {translation}.
+                  </p>
+                  {saveReferenceError && <p className="search-error" role="alert">{saveReferenceError}</p>}
+                  {saveReferenceStatus && <p className="save-reference-status" role="status">{saveReferenceStatus}</p>}
+                </form>
+
+                {savedVerses.length === 0 ? (
+                  <div className="personal-study-empty">
+                    <span aria-hidden="true">✦</span>
+                    <h3>Your study library is empty</h3>
+                    <p>Type a Bible reference above to save a passage for later.</p>
+                  </div>
+                ) : (
+                  <div className="saved-books-list">
+                    {Array.from(new Set(savedVerses.map((saved) => saved.book)))
+                      .sort((a, b) => {
+                        const indexA = books.findIndex((item) => item.name === a)
+                        const indexB = books.findIndex((item) => item.name === b)
+                        if (indexA === -1 && indexB === -1) return a.localeCompare(b)
+                        if (indexA === -1) return 1
+                        if (indexB === -1) return -1
+                        return indexA - indexB
+                      })
+                      .map((savedBookName) => {
+                        const versesForBook = savedVerses
+                          .filter((saved) => saved.book === savedBookName)
+                          .sort((a, b) => a.chapterNumber - b.chapterNumber || a.verseNumber - b.verseNumber)
+
+                        return (
+                          <section className="saved-book-group" key={savedBookName}>
+                            <h3 className="saved-book-title">
+                              <span className="saved-book-name">{savedBookName}</span>
+                              <span className="saved-book-count">
+                                {versesForBook.length} saved {versesForBook.length === 1 ? 'verse' : 'verses'}
+                              </span>
+                            </h3>
+                            <div className="saved-book-verses">
+                              {versesForBook.map((saved) => (
+                                <article className="saved-verse-card" key={saved.key}>
+                                  <div className="saved-verse-heading">
+                                    <button
+                                      type="button"
+                                      className="saved-verse-reference"
+                                      onClick={() => openSavedVerse(saved)}
+                                    >
+                                      {saved.book} {saved.chapterNumber}:{saved.verseNumber} <span>· {saved.translation}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="remove-saved-verse"
+                                      onClick={() => setSavedVerses((current) => current.filter((item) => item.key !== saved.key))}
+                                      aria-label={`Remove ${saved.book} ${saved.chapterNumber}:${saved.verseNumber} from Personal Study`}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="saved-verse-open-text"
+                                    onClick={() => openSavedVerse(saved)}
+                                  >
+                                    {saved.verseText}
+                                  </button>
+                                  <label className="field-label" htmlFor={`note-${saved.key}`}>Personal reflection</label>
+                                  <textarea
+                                    id={`note-${saved.key}`}
+                                    className="note-input"
+                                    rows={3}
+                                    placeholder="Write your thoughts or reflection..."
+                                    value={noteDrafts[saved.key] ?? saved.note}
+                                    onChange={(event) => {
+                                      const note = event.target.value
+                                      setNoteDrafts((current) => ({ ...current, [saved.key]: note }))
+                                      updateNote(saved.key, note)
+                                    }}
+                                  />
+                                  <p className="note-save-status">Your reflection is saved automatically.</p>
+                                </article>
+                              ))}
+                            </div>
+                          </section>
+                        )
+                      })}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+
+          {/* Advanced Bible search */}
           <section className="bible-search" aria-label="Search the Bible">
             <h2>Search the Scriptures</h2>
+
             <p className="search-description">
               Find words and phrases throughout the selected Bible translation.
             </p>
@@ -535,6 +1049,35 @@ function App() {
               >
                 {searchLoading ? 'Searching...' : 'Search'}
               </button>
+
+              <div className="search-filters">
+                <label className="field-label" htmlFor="search-book">
+                  Search in book
+                </label>
+
+                <select
+                  id="search-book"
+                  className="field-control"
+                  value={searchBook}
+                  onChange={(event) => setSearchBook(event.target.value)}
+                >
+                  <option value="">All books</option>
+                  {books.map((item) => (
+                    <option key={item.id} value={item.name}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+
+                <label className="exact-phrase-option">
+                  <input
+                    type="checkbox"
+                    checked={exactPhrase}
+                    onChange={(event) => setExactPhrase(event.target.checked)}
+                  />{' '}
+                  Exact phrase
+                </label>
+              </div>
             </form>
 
             {searchError && (
@@ -552,14 +1095,11 @@ function App() {
             {!searchLoading && hasSearched && !searchError && (
               <div className="search-results" aria-live="polite">
                 <p className="search-result-count">
-                  {searchResults.length === 0
+                  {totalResults === 0
                     ? 'No matching verses found.'
-                    : `${searchResults.length} matching verse${
-                        searchResults.length === 1 ? '' : 's'
+                    : `${totalResults} matching verse${
+                        totalResults === 1 ? '' : 's'
                       } found`}
-                  {searchResults.length === 100
-                    ? ' (showing up to 100 results)'
-                    : ''}
                 </p>
 
                 {searchResults.map((result) => (
@@ -578,6 +1118,34 @@ function App() {
                     </span>
                   </button>
                 ))}
+
+                {totalPages > 1 && (
+                  <div className="search-pagination">
+                    <button
+                      type="button"
+                      className="nav-button"
+                      disabled={searchPage === 0 || searchLoading}
+                      onClick={() => runBibleSearch(searchPage - 1)}
+                    >
+                      Previous
+                    </button>
+
+                    <span>
+                      Page {searchPage + 1} of {totalPages}
+                    </span>
+
+                    <button
+                      type="button"
+                      className="nav-button"
+                      disabled={
+                        searchPage >= totalPages - 1 || searchLoading
+                      }
+                      onClick={() => runBibleSearch(searchPage + 1)}
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -588,6 +1156,56 @@ function App() {
               {book} {chapter}
             </span>
             <span className="translation-badge">{translation}</span>
+          </div>
+
+          {/* Verse range selector */}
+          <div className="verse-range-selector">
+            <label className="field-label" htmlFor="verse-from">
+              Verse from
+            </label>
+
+            <input
+              id="verse-from"
+              className="field-control"
+              type="number"
+              min="1"
+              max={verses.length || undefined}
+              step="1"
+              placeholder="Start verse"
+              value={verseFrom}
+              onChange={(event) => setVerseFrom(event.target.value)}
+              disabled={loading || verses.length === 0}
+            />
+
+            <label className="field-label" htmlFor="verse-to">
+              Verse to
+            </label>
+
+            <input
+              id="verse-to"
+              className="field-control"
+              type="number"
+              min="1"
+              max={verses.length || undefined}
+              step="1"
+              placeholder="End verse"
+              value={verseTo}
+              onChange={(event) => setVerseTo(event.target.value)}
+              disabled={loading || verses.length === 0}
+            />
+
+            <p className="verse-range-help">
+              Leave both fields empty to read the entire chapter. Enter the same
+              number in both fields to read one verse. Filling only one field
+              also selects that single verse.
+            </p>
+
+            {verseRangeInvalid && (
+              <p className="search-error" role="alert">
+                Enter valid verse numbers within this chapter. The starting
+                verse must not exceed the ending verse.
+              </p>
+            )}
           </div>
 
           {error && (
@@ -624,16 +1242,38 @@ function App() {
             )}
 
             {!loading && !error && verses.length > 0 && (
-              <div className="verses">
-                {verses.map((verse) => (
-                  <p className="verse" key={verse.id}>
-                    <sup>{verse.verseNumber}</sup>
-                    <span>{verse.verseText}</span>
+              <>
+                {verseRangeInvalid ? (
+                  <p className="empty-state">
+                    Please correct the verse range above.
                   </p>
-                ))}
-              </div>
+                ) : filteredVerses.length === 0 ? (
+                  <p className="empty-state">
+                    No verses match your selection.
+                  </p>
+                ) : (
+                  <div className="verses">
+                    {filteredVerses.map((verse) => (
+                      <p className="verse" key={verse.id}>
+                        <sup>{verse.verseNumber}</sup>
+                        <span>{verse.verseText}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </article>
+
+          <div className="reading-progress-action">
+            <div>
+              <strong>{currentChapterRead ? 'Chapter completed' : 'Finished this chapter?'}</strong>
+              <p>{currentChapterRead ? 'This chapter is included in your reading progress.' : 'Mark this chapter as read to track your progress.'}</p>
+            </div>
+            <button type="button" className={`progress-toggle ${currentChapterRead ? 'is-read' : ''}`} onClick={toggleCurrentChapterRead}>
+              {currentChapterRead ? '✓ Mark as unread' : 'Mark chapter as read'}
+            </button>
+          </div>
 
           <nav className="chapter-nav" aria-label="Chapter navigation">
             <button
@@ -671,6 +1311,85 @@ function App() {
           </footer>
         </section>
       </div>
+      {showReadingProgress && (() => {
+        const totalBibleChapters = books.reduce((sum, item) => sum + (chapterTotals[item.name] ?? 0), 0)
+        const completedBibleChapters = books.reduce((sum, item) => {
+          const total = chapterTotals[item.name] ?? 0
+          const completed = new Set(
+            currentTranslationProgress
+              .filter((entry) => entry.book === item.name && entry.chapterNumber >= 1 && entry.chapterNumber <= total)
+              .map((entry) => entry.chapterNumber),
+          ).size
+          return sum + Math.min(completed, total)
+        }, 0)
+        const overallPercent = totalBibleChapters > 0
+          ? Math.round((completedBibleChapters / totalBibleChapters) * 100)
+          : 0
+
+        return (
+          <div className="personal-study-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReadingProgress(false) }}>
+            <section className="personal-study-modal progress-modal" role="dialog" aria-modal="true" aria-labelledby="reading-progress-title">
+              <div className="personal-study-modal-header">
+                <div>
+                  <p className="eyebrow">WORD &amp; WISDOM</p>
+                  <h2 id="reading-progress-title">Bible Reading Progress</h2>
+                  <p>Your reading progress is saved in this browser and kept when you return.</p>
+                </div>
+                <button type="button" className="nav-button" onClick={() => setShowReadingProgress(false)}>Close</button>
+              </div>
+
+              <div className="progress-overview-card">
+                <div className="progress-overview-top">
+                  <div>
+                    <span className="progress-kicker">OVERALL COMPLETION</span>
+                    <div className="progress-percent">{overallPercent}%</div>
+                    <p>{completedBibleChapters.toLocaleString()} of {totalBibleChapters.toLocaleString()} chapters completed</p>
+                  </div>
+                  <div className="progress-book-icon" aria-hidden="true">✦</div>
+                </div>
+                <div className="progress-track" role="progressbar" aria-label="Overall Bible reading progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={overallPercent}>
+                  <div className="progress-track-fill" style={{ width: `${overallPercent}%` }} />
+                </div>
+                {totalBibleChapters === 0 && <p className="progress-loading-note">Loading chapter totals from your Bible database…</p>}
+              </div>
+
+              <div className="progress-section-heading">
+                <div><h3>Progress by book</h3><p>Mark chapters as read while reading to update these bars.</p></div>
+                <span>{books.length} books</span>
+              </div>
+
+              <div className="progress-book-list">
+                {books.map((item) => {
+                  const total = chapterTotals[item.name] ?? 0
+                  const readCount = new Set(
+                    currentTranslationProgress
+                      .filter((entry) => entry.book === item.name && entry.chapterNumber >= 1 && entry.chapterNumber <= total)
+                      .map((entry) => entry.chapterNumber),
+                  ).size
+                  const pct = total > 0 ? Math.round((readCount / total) * 100) : 0
+                  return (
+                    <button type="button" className={`progress-book-row ${item.name === book ? 'is-current-book' : ''}`} key={item.id} onClick={() => { setBook(item.name); setChapter(1); setChapterInput('1'); setShowReadingProgress(false) }}>
+                      <div className="progress-book-info">
+                        <div className="progress-book-title-row"><strong>{item.name}</strong><span>{pct}%</span></div>
+                        <div className="progress-track progress-track-book" role="progressbar" aria-label={`${item.name} reading progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+                          <div className="progress-track-fill" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span>{readCount} of {total || '—'} chapters read</span>
+                      </div>
+                      <span className="progress-book-chevron" aria-hidden="true">›</span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="progress-modal-footer">
+                <p>Resetting progress will not delete your saved verses or personal notes.</p>
+                <button type="button" className="clear-reading-progress" onClick={() => { if (window.confirm('Clear ALL Bible reading progress? This cannot be undone. Your saved verses and personal notes will remain.')) setReadingProgress([]) }}>Clear All Progress</button>
+              </div>
+            </section>
+          </div>
+        )
+      })()}
     </main>
   )
 }
