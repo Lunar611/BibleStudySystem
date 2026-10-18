@@ -1,32 +1,31 @@
-# Build output
-target/
-build/
-dist/
-
-# Frontend dependencies
-node_modules/
-
 # IDE settings
 .idea/
 **/.idea/
 .vscode/
 **/.vscode/
+*.iml
+
+# Java / Maven
+**/target/
+
+# React / Node
+**/node_modules/
+**/dist/
 
 # Environment variables and secrets
 .env
 .env.*
 !.env.example
-application-local.properties
+**/application-local.properties
 
-# Logs and archives
+# Logs and operating system files
 *.log
-bible-api.zip
+.DS_Store
+Thumbs.db
 
 # Git backup directories
 **/.git-backup/
 **/.git-backup-original/
 
-# Java IDE files
-*.iml
-*.iws
-*.ipr
+# Archives
+*.zip
