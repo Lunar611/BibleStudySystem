@@ -1,16 +1,32 @@
-node_modules/
-dist/
+# Build output
 target/
+build/
+dist/
+
+# Frontend dependencies
+node_modules/
+
+# IDE settings
 .idea/
+**/.idea/
 .vscode/
+**/.vscode/
+
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
 application-local.properties
+
+# Logs and archives
 *.log
 bible-api.zip
 
+# Git backup directories
 **/.git-backup/
-
 **/.git-backup-original/
-**/.git-backup/
+
+# Java IDE files
+*.iml
+*.iws
+*.ipr
