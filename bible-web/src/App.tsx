@@ -58,9 +58,58 @@ type SavedVerse = {
 }
 
 const SAVED_VERSES_KEY = 'word-and-wisdom-saved-verses'
+const VERSE_HIGHLIGHTS_KEY = 'word-and-wisdom-verse-highlights'
+const CUSTOM_TAGS_KEY = 'word-and-wisdom-custom-tags'
 const READING_PROGRESS_KEY = 'word-and-wisdom-reading-progress'
 
 type ReadChapter = { key: string; translation: string; book: string; chapterNumber: number; readAt: string }
+
+type HighlightColor = 'yellow' | 'green' | 'blue' | 'pink'
+type VerseHighlight = {
+  key: string
+  translation: string
+  book: string
+  chapterNumber: number
+  verseNumber: number
+  verseText: string
+  color: HighlightColor
+  tags: string[]
+  start?: number
+  end?: number
+}
+
+type PendingTextSelection = { key: string; verseNumber: number; verseText: string; start: number; end: number }
+
+const HIGHLIGHT_COLORS: { value: HighlightColor; label: string; hex: string }[] = [
+  { value: 'yellow', label: 'Yellow', hex: '#fff0a8' },
+  { value: 'green', label: 'Green', hex: '#c9efcf' },
+  { value: 'blue', label: 'Blue', hex: '#cce7ff' },
+  { value: 'pink', label: 'Pink', hex: '#ffd6e4' },
+]
+const BUILT_IN_TAGS = ['Faith', 'Hope', 'Prayer', 'Wisdom']
+
+function loadHighlights(): VerseHighlight[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(VERSE_HIGHLIGHTS_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is VerseHighlight =>
+      item !== null && typeof item === 'object' &&
+      typeof item.key === 'string' && typeof item.translation === 'string' &&
+      typeof item.book === 'string' && typeof item.chapterNumber === 'number' &&
+      typeof item.verseNumber === 'number' && typeof item.verseText === 'string' &&
+      ['yellow', 'green', 'blue', 'pink'].includes(item.color) &&
+      Array.isArray(item.tags) && item.tags.every((tag: unknown) => typeof tag === 'string'),
+    )
+  } catch { return [] }
+}
+
+function loadCustomTags(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CUSTOM_TAGS_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+  } catch { return [] }
+}
 
 function loadReadingProgress(): ReadChapter[] {
   try {
@@ -110,7 +159,6 @@ function App() {
   const [chapterInput, setChapterInput] = useState('1')
 
   const [chapterCount, setChapterCount] = useState(0)
-  const [chapterTotals, setChapterTotals] = useState<Record<string, number>>({})
   const [verses, setVerses] = useState<Verse[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -138,12 +186,29 @@ function App() {
   const [savedVerses, setSavedVerses] =
     useState<SavedVerse[]>(loadSavedVerses)
   const [showSavedVerses, setShowSavedVerses] = useState(false)
+  const [highlights, setHighlights] = useState<VerseHighlight[]>(loadHighlights)
+  const [pendingTextSelection, setPendingTextSelection] = useState<PendingTextSelection | null>(null)
+  const [customTags, setCustomTags] = useState<string[]>(loadCustomTags)
+  const [newTag, setNewTag] = useState('')
+  const [highlightFilterColor, setHighlightFilterColor] = useState('all')
+  const [highlightFilterTag, setHighlightFilterTag] = useState('all')
   const [readingProgress, setReadingProgress] = useState<ReadChapter[]>(loadReadingProgress)
   const [showReadingProgress, setShowReadingProgress] = useState(false)
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
   const [saveReference, setSaveReference] = useState('')
   const [saveReferenceError, setSaveReferenceError] = useState('')
   const [saveReferenceStatus, setSaveReferenceStatus] = useState('')
+
+  // Persist verse highlights and custom tags separately from bookmarks and reading progress.
+  useEffect(() => {
+    try { localStorage.setItem(VERSE_HIGHLIGHTS_KEY, JSON.stringify(highlights)) }
+    catch { setError('Could not save verse highlights in this browser.') }
+  }, [highlights])
+
+  useEffect(() => {
+    try { localStorage.setItem(CUSTOM_TAGS_KEY, JSON.stringify(customTags)) }
+    catch { setError('Could not save custom tags in this browser.') }
+  }, [customTags])
 
   // Save bookmarks and notes whenever they change.
   useEffect(() => {
@@ -219,32 +284,6 @@ function App() {
       cancelled = true
     }
   }, [])
-
-  // Load the real chapter count for every book so progress percentages use the Bible data.
-  useEffect(() => {
-    if (books.length === 0 || !translation) return
-    let cancelled = false
-
-    async function loadAllChapterTotals() {
-      const entries = await Promise.all(books.map(async (item) => {
-        try {
-          const response = await fetch(
-            `/api/translations/${encodeURIComponent(translation)}` +
-              `/books/${encodeURIComponent(item.name)}/chapters`,
-          )
-          if (!response.ok) return [item.name, 0] as const
-          const data: ChapterSummary[] = await response.json()
-          return [item.name, Array.isArray(data) ? data.length : 0] as const
-        } catch {
-          return [item.name, 0] as const
-        }
-      }))
-      if (!cancelled) setChapterTotals(Object.fromEntries(entries))
-    }
-
-    loadAllChapterTotals()
-    return () => { cancelled = true }
-  }, [books, translation])
 
   // Retrieve chapters for the selected book.
   useEffect(() => {
@@ -372,6 +411,114 @@ function App() {
     verseNumber: number,
   ) {
     return `${verseTranslation}|${verseBook}|${verseChapter}|${verseNumber}`
+  }
+
+  function captureSelectedText(verse: Verse, textElement: HTMLSpanElement) {
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return
+    const range = selection.getRangeAt(0)
+    if (!textElement.contains(range.startContainer) || !textElement.contains(range.endContainer)) return
+    const beforeRange = range.cloneRange()
+    beforeRange.selectNodeContents(textElement)
+    beforeRange.setEnd(range.startContainer, range.startOffset)
+    const start = beforeRange.toString().length
+    const selectedText = range.toString()
+    const end = start + selectedText.length
+    if (!selectedText.trim() || end <= start) return
+    setPendingTextSelection({
+      key: getVerseKey(translation, book, chapter, verse.verseNumber),
+      verseNumber: verse.verseNumber,
+      verseText: verse.verseText,
+      start,
+      end,
+    })
+  }
+
+  function saveSelectedTextHighlight(color: HighlightColor) {
+    if (!pendingTextSelection) return
+    const base = pendingTextSelection
+    const key = `${base.key}|${base.start}-${base.end}`
+    const selectedText = base.verseText.slice(base.start, base.end)
+    setHighlights((current) => {
+      const existing = current.find((item) => item.key === key)
+      if (existing) return current.map((item) => item.key === key ? { ...item, color, verseText: base.verseText } : item)
+      return [...current, {
+        key,
+        translation,
+        book,
+        chapterNumber: chapter,
+        verseNumber: base.verseNumber,
+        verseText: selectedText,
+        color,
+        tags: [],
+        start: base.start,
+        end: base.end,
+      }]
+    })
+    window.getSelection()?.removeAllRanges()
+    setPendingTextSelection(null)
+  }
+
+  function getVerseHighlightKey(verseNumber: number) {
+    return getVerseKey(translation, book, chapter, verseNumber)
+  }
+
+  function getTextHighlightSegments(verse: Verse) {
+    const baseKey = getVerseHighlightKey(verse.verseNumber)
+    const verseLevel = highlights.find((item) => item.key === baseKey && (typeof item.start !== 'number' || typeof item.end !== 'number'))
+    if (verseLevel) return [{ text: verse.verseText, color: verseLevel.color, start: 0, end: verse.verseText.length }]
+    const matching = highlights
+      .filter((item) => item.key.startsWith(`${baseKey}|`))
+      .filter((item) => typeof item.start === 'number' && typeof item.end === 'number')
+      .sort((a, b) => (a.start ?? 0) - (b.start ?? 0))
+    const segments: { text: string; color?: HighlightColor; start: number; end: number }[] = []
+    let cursor = 0
+    matching.forEach((item) => {
+      const start = Math.max(cursor, Math.min(verse.verseText.length, item.start ?? 0))
+      const end = Math.max(start, Math.min(verse.verseText.length, item.end ?? start))
+      if (start > cursor) segments.push({ text: verse.verseText.slice(cursor, start), start: cursor, end: start })
+      if (end > start) segments.push({ text: verse.verseText.slice(start, end), color: item.color, start, end })
+      cursor = Math.max(cursor, end)
+    })
+    if (cursor < verse.verseText.length) segments.push({ text: verse.verseText.slice(cursor), start: cursor, end: verse.verseText.length })
+    if (matching.length === 0) return [{ text: verse.verseText, start: 0, end: verse.verseText.length }]
+    return segments
+  }
+
+  function removeHighlight(key: string) {
+    setHighlights((current) => current.filter((item) => item.key !== key))
+  }
+
+  function toggleHighlightTag(key: string, tag: string) {
+    setHighlights((current) => current.map((item) => {
+      if (item.key !== key) return item
+      const tags = item.tags.includes(tag) ? item.tags.filter((existing) => existing !== tag) : [...item.tags, tag]
+      return { ...item, tags }
+    }))
+  }
+
+  function addCustomTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const tag = newTag.trim()
+    if (!tag) return
+    if ([...BUILT_IN_TAGS, ...customTags].some((existing) => existing.toLowerCase() === tag.toLowerCase())) {
+      setNewTag('')
+      return
+    }
+    setCustomTags((current) => [...current, tag])
+    setNewTag('')
+  }
+
+  function openHighlightedVerse(saved: VerseHighlight) {
+    setTranslation(saved.translation)
+    setBook(saved.book)
+    setChapter(saved.chapterNumber)
+    setChapterInput(String(saved.chapterNumber))
+    setVerseFrom(String(saved.verseNumber))
+    setVerseTo(String(saved.verseNumber))
+    setError('')
+    setShowSavedVerses(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   // Save verses by typing a reference such as "John 3:16" or "Psalm 23:1-3".
@@ -632,6 +779,16 @@ function App() {
       verseRangeEnd !== null &&
       verseRangeStart > verseRangeEnd)
 
+  const filteredHighlights = highlights.filter((item) => {
+    const matchesColor = highlightFilterColor === 'all' || item.color === highlightFilterColor
+    const matchesTag = highlightFilterTag === 'all'
+      ? true
+      : highlightFilterTag === 'untagged'
+        ? item.tags.length === 0
+        : item.tags.includes(highlightFilterTag)
+    return matchesColor && matchesTag
+  })
+
   const filteredVerses = verseRangeInvalid
     ? []
     : verseFrom.trim() === '' && verseTo.trim() === ''
@@ -870,6 +1027,9 @@ function App() {
             <span>★</span>
             Saved Verses
           </button>
+          <button className="sidebar-link" onClick={() => setShowSavedVerses(true)}>
+            <span>✎</span> Highlights &amp; Tags
+          </button>
 
           <button className="sidebar-link" onClick={() => setShowReadingProgress(true)}>
             <span>✓</span> Reading Progress
@@ -940,6 +1100,61 @@ function App() {
                   {saveReferenceError && <p className="search-error" role="alert">{saveReferenceError}</p>}
                   {saveReferenceStatus && <p className="save-reference-status" role="status">{saveReferenceStatus}</p>}
                 </form>
+
+                <section className="highlight-library" aria-labelledby="highlights-tags-title">
+                  <div className="highlight-library-heading">
+                    <div>
+                      <h3 id="highlights-tags-title">Highlights &amp; Tags</h3>
+                      <p>Color-code meaningful verses and organize them with tags.</p>
+                    </div>
+                    <span>{highlights.length} highlighted {highlights.length === 1 ? 'verse' : 'verses'}</span>
+                  </div>
+
+                  <form className="custom-tag-form" onSubmit={addCustomTag}>
+                    <label className="field-label" htmlFor="new-custom-tag">Create a custom tag</label>
+                    <div className="save-reference-controls">
+                      <input id="new-custom-tag" className="search-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} placeholder="e.g. Gratitude or Forgiveness" maxLength={32} />
+                      <button className="search-button" type="submit" disabled={!newTag.trim()}>Add tag</button>
+                    </div>
+                    <p className="save-reference-help">Available tags: {[...BUILT_IN_TAGS, ...customTags].join(', ')}</p>
+                  </form>
+
+                  <div className="highlight-filters">
+                    <label className="field-label" htmlFor="highlight-color-filter">Filter by color</label>
+                    <select id="highlight-color-filter" className="field-control" value={highlightFilterColor} onChange={(event) => setHighlightFilterColor(event.target.value)}>
+                      <option value="all">All colors</option>
+                      {HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
+                    </select>
+                    <label className="field-label" htmlFor="highlight-tag-filter">Filter by tag</label>
+                    <select id="highlight-tag-filter" className="field-control" value={highlightFilterTag} onChange={(event) => setHighlightFilterTag(event.target.value)}>
+                      <option value="all">All tags</option>
+                      {[...BUILT_IN_TAGS, ...customTags].map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+                      <option value="untagged">Untagged</option>
+                    </select>
+                  </div>
+
+                  {highlights.length === 0 ? (
+                    <p className="highlight-empty">No highlights yet. Select text in a verse, then choose a highlight color to save it here.</p>
+                  ) : (
+                    <div className="highlight-list">
+                      {highlights.filter((item) => (highlightFilterColor === 'all' || item.color === highlightFilterColor) && (highlightFilterTag === 'all' || (highlightFilterTag === 'untagged' ? item.tags.length === 0 : item.tags.includes(highlightFilterTag)))).sort((a, b) => a.book.localeCompare(b.book) || a.chapterNumber - b.chapterNumber || a.verseNumber - b.verseNumber).map((item) => {
+                        const color = HIGHLIGHT_COLORS.find((option) => option.value === item.color) ?? HIGHLIGHT_COLORS[0]
+                        return (
+                          <article className="highlight-card" key={item.key}>
+                            <div className="highlight-card-top">
+                              <button type="button" className="saved-verse-reference" onClick={() => openHighlightedVerse(item)}>{item.book} {item.chapterNumber}:{item.verseNumber} <span>· {item.translation}</span></button>
+                              <button type="button" className="remove-saved-verse" onClick={() => removeHighlight(item.key)}>Remove</button>
+                            </div>
+                            <button type="button" className="highlight-verse-text" style={{ backgroundColor: color.hex }} onClick={() => openHighlightedVerse(item)}>{item.verseText}</button>
+                            <div className="highlight-card-color-row"><span>Highlight color</span><div className="highlight-color-options">{HIGHLIGHT_COLORS.map((option) => <button key={option.value} type="button" title={option.label} aria-label={`Set ${item.book} ${item.chapterNumber}:${item.verseNumber} highlight to ${option.label}`} aria-pressed={item.color === option.value} className={`highlight-color-button ${item.color === option.value ? 'is-selected' : ''}`} style={{ backgroundColor: option.hex }} onClick={() => setHighlights((current) => current.map((entry) => entry.key === item.key ? { ...entry, color: option.value } : entry))} />)}</div></div>
+                            <div className="highlight-tags"><span className="highlight-tags-label">Tags</span>{[...BUILT_IN_TAGS, ...customTags].map((tag) => <label className={`highlight-tag-option ${item.tags.includes(tag) ? 'is-checked' : ''}`} key={tag}><input type="checkbox" checked={item.tags.includes(tag)} onChange={() => toggleHighlightTag(item.key, tag)} />{tag}</label>)}</div>
+                          </article>
+                        )
+                      })}
+                      {filteredHighlights.length === 0 && <p className="highlight-empty">No highlights match those filters.</p>}
+                    </div>
+                  )}
+                </section>
 
                 {savedVerses.length === 0 ? (
                   <div className="personal-study-empty">
@@ -1253,12 +1468,38 @@ function App() {
                   </p>
                 ) : (
                   <div className="verses">
-                    {filteredVerses.map((verse) => (
-                      <p className="verse" key={verse.id}>
-                        <sup>{verse.verseNumber}</sup>
-                        <span>{verse.verseText}</span>
-                      </p>
-                    ))}
+                    {filteredVerses.map((verse) => {
+                      const segments = getTextHighlightSegments(verse)
+                      return (
+                        <div className="verse-study-row" key={verse.id}>
+                          <p className="verse">
+                            <sup>{verse.verseNumber}</sup>
+                            <span className="verse-selectable-text" onMouseUp={(event) => captureSelectedText(verse, event.currentTarget)} onTouchEnd={(event) => captureSelectedText(verse, event.currentTarget)}>
+                              {segments.map((segment, index) => {
+                                const color = segment.color ? HIGHLIGHT_COLORS.find((item) => item.value === segment.color) : undefined
+                                return color
+                                  ? <mark key={`${segment.start}-${segment.end}-${index}`} className={`text-highlight text-highlight-${segment.color}`} style={{ backgroundColor: color.hex }}>{segment.text}</mark>
+                                  : <span key={`${segment.start}-${segment.end}-${index}`}>{segment.text}</span>
+                              })}
+                            </span>
+                          </p>
+                        </div>
+                      )
+                    })}
+                    {pendingTextSelection && (
+                      <div className="selection-highlight-toolbar" role="group" aria-label="Highlight selected text">
+                        <div className="selection-toolbar-copy">
+                          <strong>Highlight selected text</strong>
+                          <span>Choose a color for the text you selected.</span>
+                        </div>
+                        <div className="highlight-color-options">
+                          {HIGHLIGHT_COLORS.map((color) => (
+                            <button type="button" key={color.value} className="highlight-color-button" style={{ backgroundColor: color.hex }} title={`Highlight selected text ${color.label.toLowerCase()}`} aria-label={`Highlight selected text ${color.label}`} onMouseDown={(event) => event.preventDefault()} onClick={() => saveSelectedTextHighlight(color.value)} />
+                          ))}
+                        </div>
+                        <button type="button" className="selection-toolbar-cancel" onClick={() => { setPendingTextSelection(null); window.getSelection()?.removeAllRanges() }}>Cancel</button>
+                      </div>
+                    )}
                   </div>
                 )}
               </>
@@ -1311,85 +1552,47 @@ function App() {
           </footer>
         </section>
       </div>
-      {showReadingProgress && (() => {
-        const totalBibleChapters = books.reduce((sum, item) => sum + (chapterTotals[item.name] ?? 0), 0)
-        const completedBibleChapters = books.reduce((sum, item) => {
-          const total = chapterTotals[item.name] ?? 0
-          const completed = new Set(
-            currentTranslationProgress
-              .filter((entry) => entry.book === item.name && entry.chapterNumber >= 1 && entry.chapterNumber <= total)
-              .map((entry) => entry.chapterNumber),
-          ).size
-          return sum + Math.min(completed, total)
-        }, 0)
-        const overallPercent = totalBibleChapters > 0
-          ? Math.round((completedBibleChapters / totalBibleChapters) * 100)
-          : 0
-
-        return (
-          <div className="personal-study-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReadingProgress(false) }}>
-            <section className="personal-study-modal progress-modal" role="dialog" aria-modal="true" aria-labelledby="reading-progress-title">
-              <div className="personal-study-modal-header">
-                <div>
-                  <p className="eyebrow">WORD &amp; WISDOM</p>
-                  <h2 id="reading-progress-title">Bible Reading Progress</h2>
-                  <p>Your reading progress is saved in this browser and kept when you return.</p>
-                </div>
-                <button type="button" className="nav-button" onClick={() => setShowReadingProgress(false)}>Close</button>
+      {showReadingProgress && (
+        <div className="personal-study-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReadingProgress(false) }}>
+          <section className="personal-study-modal progress-modal" role="dialog" aria-modal="true" aria-labelledby="reading-progress-title">
+            <div className="personal-study-modal-header">
+              <div>
+                <p className="eyebrow">WORD &amp; WISDOM</p>
+                <h2 id="reading-progress-title">Bible Reading Progress</h2>
+                <p>Track the chapters you have completed in each translation. Your progress is saved in this browser.</p>
               </div>
-
-              <div className="progress-overview-card">
-                <div className="progress-overview-top">
-                  <div>
-                    <span className="progress-kicker">OVERALL COMPLETION</span>
-                    <div className="progress-percent">{overallPercent}%</div>
-                    <p>{completedBibleChapters.toLocaleString()} of {totalBibleChapters.toLocaleString()} chapters completed</p>
+              <button type="button" className="nav-button" onClick={() => setShowReadingProgress(false)}>Close</button>
+            </div>
+            <div className="progress-summary">
+              <span className="progress-summary-number">{currentTranslationProgress.length}</span>
+              <span>chapters marked as read in {translation}</span>
+            </div>
+            <p className="progress-note">Progress is tracked separately for each translation. Use “Mark chapter as read” while reading, or use the buttons below to mark an entire book.</p>
+            <div className="progress-book-list">
+              {books.map((item) => {
+                const readCount = currentTranslationProgress.filter((entry) => entry.book === item.name).length
+                const total = item.name === book ? chapterCount : 0
+                const pct = total > 0 ? Math.round((Math.min(readCount, total) / total) * 100) : 0
+                return (
+                  <div className="progress-book-row" key={item.id}>
+                    <div className="progress-book-info">
+                      <strong>{item.name}</strong>
+                      <span>{readCount} {readCount === 1 ? 'chapter' : 'chapters'} marked read{total > 0 ? ` · ${pct}% of ${total}` : ''}</span>
+                    </div>
+                    <button type="button" className="progress-book-action" onClick={() => {
+                      if (item.name === book && chapterCount > 0) markBookReadProgress(item.name, chapterCount)
+                      else { setBook(item.name); setChapter(1); setChapterInput('1'); setShowReadingProgress(false) }
+                    }}>{item.name === book && chapterCount > 0 ? (readCount === chapterCount ? 'Reset book' : 'Mark book read') : 'Open book'}</button>
                   </div>
-                  <div className="progress-book-icon" aria-hidden="true">✦</div>
-                </div>
-                <div className="progress-track" role="progressbar" aria-label="Overall Bible reading progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={overallPercent}>
-                  <div className="progress-track-fill" style={{ width: `${overallPercent}%` }} />
-                </div>
-                {totalBibleChapters === 0 && <p className="progress-loading-note">Loading chapter totals from your Bible database…</p>}
-              </div>
-
-              <div className="progress-section-heading">
-                <div><h3>Progress by book</h3><p>Mark chapters as read while reading to update these bars.</p></div>
-                <span>{books.length} books</span>
-              </div>
-
-              <div className="progress-book-list">
-                {books.map((item) => {
-                  const total = chapterTotals[item.name] ?? 0
-                  const readCount = new Set(
-                    currentTranslationProgress
-                      .filter((entry) => entry.book === item.name && entry.chapterNumber >= 1 && entry.chapterNumber <= total)
-                      .map((entry) => entry.chapterNumber),
-                  ).size
-                  const pct = total > 0 ? Math.round((readCount / total) * 100) : 0
-                  return (
-                    <button type="button" className={`progress-book-row ${item.name === book ? 'is-current-book' : ''}`} key={item.id} onClick={() => { setBook(item.name); setChapter(1); setChapterInput('1'); setShowReadingProgress(false) }}>
-                      <div className="progress-book-info">
-                        <div className="progress-book-title-row"><strong>{item.name}</strong><span>{pct}%</span></div>
-                        <div className="progress-track progress-track-book" role="progressbar" aria-label={`${item.name} reading progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
-                          <div className="progress-track-fill" style={{ width: `${pct}%` }} />
-                        </div>
-                        <span>{readCount} of {total || '—'} chapters read</span>
-                      </div>
-                      <span className="progress-book-chevron" aria-hidden="true">›</span>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="progress-modal-footer">
-                <p>Resetting progress will not delete your saved verses or personal notes.</p>
-                <button type="button" className="clear-reading-progress" onClick={() => { if (window.confirm('Clear ALL Bible reading progress? This cannot be undone. Your saved verses and personal notes will remain.')) setReadingProgress([]) }}>Clear All Progress</button>
-              </div>
-            </section>
-          </div>
-        )
-      })()}
+                )
+              })}
+            </div>
+            <div className="progress-modal-footer">
+              <button type="button" className="remove-saved-verse" onClick={() => { if (window.confirm(`Clear all reading progress for ${translation}?`)) setReadingProgress((current) => current.filter((item) => item.translation !== translation)) }}>Clear {translation} progress</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 }

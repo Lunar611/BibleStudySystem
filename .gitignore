@@ -29,3 +29,11 @@ Thumbs.db
 
 # Archives
 *.zip
+
+# Java / Spring Boot secrets
+**/application-secret.properties
+
+# Local databases and temporary files
+*.db
+*.sqlite
+*.sqlite3
