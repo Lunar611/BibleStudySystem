@@ -81,7 +81,7 @@ public class BibleService {
                 .toList();
     }
 
-    // Get one specific chapter
+    // Get one specific chapter, including its verses
     public BibleChapterResponse getChapter(
             String translation,
             String book,
@@ -98,11 +98,22 @@ public class BibleService {
                         "Bible chapter not found"
                 ));
 
+        List<BibleVerseResponse> verses = verseRepository
+                .findByChapter_IdOrderByVerseNumberAsc(chapter.getId())
+                .stream()
+                .map(verse -> new BibleVerseResponse(
+                        verse.getId(),
+                        verse.getVerseNumber(),
+                        verse.getVerseText()
+                ))
+                .toList();
+
         return new BibleChapterResponse(
                 chapter.getId(),
                 chapter.getTranslation().getAbbreviation(),
                 chapter.getBook().getName(),
-                chapter.getChapterNumber()
+                chapter.getChapterNumber(),
+                verses
         );
     }
 
