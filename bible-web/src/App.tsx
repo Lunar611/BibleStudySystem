@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\\/+$/, '')
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
 function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   if (typeof input === 'string' && input.startsWith('/api/')) {
@@ -1608,3 +1608,4 @@ function App() {
 }
 
 export default App
+
