@@ -1,6 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\\/+$/, '')
+
+function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  if (typeof input === 'string' && input.startsWith('/api/')) {
+    return fetch(`${API_BASE_URL}${input}`, init)
+  }
+
+  return fetch(input, init)
+}
+
 type Translation = {
   id: number
   abbreviation: string
@@ -236,8 +246,8 @@ function App() {
     async function loadOptions() {
       try {
         const [translationResponse, bookResponse] = await Promise.all([
-          fetch('/api/translations'),
-          fetch('/api/books'),
+          apiFetch('/api/translations'),
+          apiFetch('/api/books'),
         ])
 
         if (!translationResponse.ok || !bookResponse.ok) {
@@ -295,7 +305,7 @@ function App() {
       setChapterCount(0)
 
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `/api/translations/${encodeURIComponent(translation)}` +
             `/books/${encodeURIComponent(book)}/chapters`,
           { signal: controller.signal },
@@ -347,7 +357,7 @@ function App() {
           `/books/${encodeURIComponent(book)}` +
           `/chapters/${chapter}`
 
-        const chapterResponse = await fetch(chapterUrl, {
+        const chapterResponse = await apiFetch(chapterUrl, {
           signal: controller.signal,
         })
 
@@ -367,7 +377,7 @@ function App() {
           throw new Error('Invalid chapter information from the server.')
         }
 
-        const versesResponse = await fetch(
+        const versesResponse = await apiFetch(
           `/api/chapters/${chapterData.id}/verses`,
           { signal: controller.signal },
         )
@@ -558,7 +568,7 @@ function App() {
     }
 
     try {
-      const chapterResponse = await fetch(
+      const chapterResponse = await apiFetch(
         `/api/translations/${encodeURIComponent(translation)}` +
           `/books/${encodeURIComponent(matchingBook.name)}/chapters/${chapterNumber}`,
       )
@@ -568,7 +578,7 @@ function App() {
       }
 
       const chapterData: Chapter = await chapterResponse.json()
-      const versesResponse = await fetch(`/api/chapters/${chapterData.id}/verses`)
+      const versesResponse = await apiFetch(`/api/chapters/${chapterData.id}/verses`)
 
       if (!versesResponse.ok) {
         throw new Error('Could not retrieve the verses for that reference.')
@@ -666,7 +676,7 @@ function App() {
         size: '20',
       })
 
-      const response = await fetch(`/api/search?${params.toString()}`)
+      const response = await apiFetch(`/api/search?${params.toString()}`)
 
       if (!response.ok) {
         throw new Error('Could not search the Bible. Please try again.')
@@ -821,7 +831,7 @@ function App() {
     const previousBook = books[bookIndex - 1]
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/translations/${encodeURIComponent(translation)}` +
           `/books/${encodeURIComponent(previousBook.name)}/chapters`,
       )
