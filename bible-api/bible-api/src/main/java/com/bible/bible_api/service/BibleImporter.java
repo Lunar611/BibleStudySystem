@@ -6,10 +6,14 @@ import com.bible.bible_api.entity.BibleVerse;
 import com.bible.bible_api.repository.BibleChapterRepository;
 import com.bible.bible_api.repository.BibleTranslationRepository;
 import com.bible.bible_api.repository.BibleVerseRepository;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.InputStream;
 
@@ -20,6 +24,9 @@ public class BibleImporter implements CommandLineRunner {
     private final BibleChapterRepository chapterRepository;
     private final BibleVerseRepository verseRepository;
     private final ObjectMapper objectMapper;
+
+    @Value("${bible.import.enabled:false}")
+    private boolean importEnabled;
 
     public BibleImporter(
             BibleTranslationRepository translationRepository,
@@ -34,8 +41,10 @@ public class BibleImporter implements CommandLineRunner {
     }
 
     @Override
+    @Transactional
     public void run(String... args) throws Exception {
-        if (!Boolean.getBoolean("bible.import.enabled")) {
+
+        if (!importEnabled) {
             System.out.println("KJV import disabled.");
             return;
         }
@@ -44,13 +53,19 @@ public class BibleImporter implements CommandLineRunner {
     }
 
     public void importBible() throws Exception {
+
+        System.out.println("Starting KJV Bible import...");
+
         BibleTranslation translation = translationRepository
                 .findByAbbreviation("KJV")
                 .orElseThrow(() ->
-                        new IllegalStateException("KJV translation not found.")
+                        new IllegalStateException(
+                                "KJV translation not found."
+                        )
                 );
 
-        InputStream input = getClass().getResourceAsStream("/data/kjv.json");
+        InputStream input = getClass()
+                .getResourceAsStream("/data/kjv.json");
 
         if (input == null) {
             throw new IllegalStateException(
@@ -62,12 +77,19 @@ public class BibleImporter implements CommandLineRunner {
         int skipped = 0;
 
         try (input) {
+
             JsonNode root = objectMapper.readTree(input);
 
             for (JsonNode book : root.path("books")) {
+
                 String bookName = book.path("englishName").asText();
 
+                System.out.println(
+                        "Processing book: " + bookName
+                );
+
                 for (JsonNode chapterData : book.path("chapters")) {
+
                     int chapterNumber =
                             chapterData.path("chapter").asInt();
 
@@ -85,19 +107,25 @@ public class BibleImporter implements CommandLineRunner {
                                     )
                             );
 
-                    for (JsonNode verseData : chapterData.path("verses")) {
+                    for (JsonNode verseData :
+                            chapterData.path("verses")) {
+
                         int verseNumber =
                                 verseData.path("number").asInt();
 
-                        if (verseRepository.existsByChapter_IdAndVerseNumber(
-                                chapter.getId(),
-                                verseNumber
-                        )) {
+                        boolean verseExists = verseRepository
+                                .existsByChapter_IdAndVerseNumber(
+                                        chapter.getId(),
+                                        verseNumber
+                                );
+
+                        if (verseExists) {
                             skipped++;
                             continue;
                         }
 
                         BibleVerse verse = new BibleVerse();
+
                         verse.setChapter(chapter);
                         verse.setVerseNumber(verseNumber);
                         verse.setVerseText(
@@ -105,6 +133,7 @@ public class BibleImporter implements CommandLineRunner {
                         );
 
                         verseRepository.save(verse);
+
                         imported++;
                     }
                 }
@@ -114,5 +143,8 @@ public class BibleImporter implements CommandLineRunner {
         System.out.println("KJV import completed.");
         System.out.println("Verses imported: " + imported);
         System.out.println("Verses skipped: " + skipped);
+        System.out.println(
+                "Total verses processed: " + (imported + skipped)
+        );
     }
 }
