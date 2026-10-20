@@ -1,16 +1,13 @@
-
 package com.bible.bible_api.controller;
 
+import com.bible.bible_api.service.BibleService;
 import com.bible.bible_api.dto.BibleSearchPageResponse;
 import com.bible.bible_api.dto.BibleChapterResponse;
 import com.bible.bible_api.dto.BibleChapterSummary;
-import com.bible.bible_api.dto.BibleSearchResult;
 import com.bible.bible_api.dto.BibleVerseResponse;
 
 import com.bible.bible_api.entity.BibleBook;
 import com.bible.bible_api.entity.BibleTranslation;
-
-import com.bible.bible_api.service.BibleService;
 
 import org.springframework.web.bind.annotation.*;
 

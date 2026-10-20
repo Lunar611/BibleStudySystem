@@ -24,11 +24,17 @@ public class BibleVerse {
     @Column(name = "verse_number", nullable = false)
     private Integer verseNumber;
 
-    @Column(name = "verse_text", nullable = false, columnDefinition = "TEXT")
+    @Column(
+            name = "verse_text",
+            nullable = false,
+            columnDefinition = "TEXT"
+    )
     private String verseText;
 
     public BibleVerse() {
     }
+
+    // Getters
 
     public Long getId() {
         return id;
@@ -45,6 +51,8 @@ public class BibleVerse {
     public String getVerseText() {
         return verseText;
     }
+
+    // Setters
 
     public void setChapter(BibleChapter chapter) {
         this.chapter = chapter;

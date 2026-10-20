@@ -1,4 +1,3 @@
-
 package com.bible.bible_api.service;
 
 import com.bible.bible_api.dto.BibleChapterResponse;
