@@ -1,3 +1,4 @@
+
 package com.bible.bible_api.service;
 
 import com.bible.bible_api.entity.BibleChapter;
@@ -13,9 +14,11 @@ import tools.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.InputStream;
+import java.util.HashSet;
+import java.util.Set;
 
 @Component
 public class BibleImporter implements CommandLineRunner {
@@ -24,6 +27,7 @@ public class BibleImporter implements CommandLineRunner {
     private final BibleChapterRepository chapterRepository;
     private final BibleVerseRepository verseRepository;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     @Value("${bible.import.enabled:false}")
     private boolean importEnabled;
@@ -32,18 +36,18 @@ public class BibleImporter implements CommandLineRunner {
             BibleTranslationRepository translationRepository,
             BibleChapterRepository chapterRepository,
             BibleVerseRepository verseRepository,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            TransactionTemplate transactionTemplate
     ) {
         this.translationRepository = translationRepository;
         this.chapterRepository = chapterRepository;
         this.verseRepository = verseRepository;
         this.objectMapper = objectMapper;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @Override
-    @Transactional
     public void run(String... args) throws Exception {
-
         if (!importEnabled) {
             System.out.println("KJV import disabled.");
             return;
@@ -53,7 +57,6 @@ public class BibleImporter implements CommandLineRunner {
     }
 
     public void importBible() throws Exception {
-
         System.out.println("Starting KJV Bible import...");
 
         BibleTranslation translation = translationRepository
@@ -64,87 +67,119 @@ public class BibleImporter implements CommandLineRunner {
                         )
                 );
 
-        InputStream input = getClass()
-                .getResourceAsStream("/data/kjv.json");
+        try (InputStream input =
+                     getClass().getResourceAsStream("/data/kjv.json")) {
 
-        if (input == null) {
-            throw new IllegalStateException(
-                    "Could not find resources/data/kjv.json"
-            );
-        }
-
-        int imported = 0;
-        int skipped = 0;
-
-        try (input) {
+            if (input == null) {
+                throw new IllegalStateException(
+                        "Could not find resources/data/kjv.json"
+                );
+            }
 
             JsonNode root = objectMapper.readTree(input);
 
+            int imported = 0;
+            int skipped = 0;
+            int chaptersProcessed = 0;
+
             for (JsonNode book : root.path("books")) {
+                String bookName =
+                        book.path("englishName").stringValue();
 
-                String bookName = book.path("englishName").asText();
-
-                System.out.println(
-                        "Processing book: " + bookName
-                );
+                System.out.println("Processing book: " + bookName);
 
                 for (JsonNode chapterData : book.path("chapters")) {
-
                     int chapterNumber =
                             chapterData.path("chapter").asInt();
 
-                    BibleChapter chapter = chapterRepository
-                            .findByTranslation_AbbreviationAndBook_NameAndChapterNumber(
-                                    translation.getAbbreviation(),
-                                    bookName,
-                                    chapterNumber
-                            )
-                            .orElseThrow(() ->
-                                    new IllegalStateException(
-                                            "Chapter not found: "
-                                                    + bookName + " "
-                                                    + chapterNumber
-                                    )
-                            );
+                    int[] chapterCounts = transactionTemplate.execute(
+                            transactionStatus -> {
+                                BibleChapter chapter = chapterRepository
+                                        .findByTranslation_AbbreviationAndBook_NameAndChapterNumber(
+                                                translation.getAbbreviation(),
+                                                bookName,
+                                                chapterNumber
+                                        )
+                                        .orElseThrow(() ->
+                                                new IllegalStateException(
+                                                        "Chapter not found: "
+                                                                + bookName
+                                                                + " "
+                                                                + chapterNumber
+                                                )
+                                        );
 
-                    for (JsonNode verseData :
-                            chapterData.path("verses")) {
+                                Set<Integer> existingNumbers =
+                                        new HashSet<>();
 
-                        int verseNumber =
-                                verseData.path("number").asInt();
+                                for (BibleVerse existing :
+                                        verseRepository.findAllByChapter_Id(
+                                                chapter.getId())) {
+                                    existingNumbers.add(
+                                            existing.getVerseNumber()
+                                    );
+                                }
 
-                        boolean verseExists = verseRepository
-                                .existsByChapter_IdAndVerseNumber(
-                                        chapter.getId(),
-                                        verseNumber
-                                );
+                                int chapterImported = 0;
+                                int chapterSkipped = 0;
 
-                        if (verseExists) {
-                            skipped++;
-                            continue;
-                        }
+                                for (JsonNode verseData :
+                                        chapterData.path("verses")) {
 
-                        BibleVerse verse = new BibleVerse();
+                                    int verseNumber =
+                                            verseData.path("number").asInt();
 
-                        verse.setChapter(chapter);
-                        verse.setVerseNumber(verseNumber);
-                        verse.setVerseText(
-                                verseData.path("text").asText()
+                                    if (!existingNumbers.add(verseNumber)) {
+                                        chapterSkipped++;
+                                        continue;
+                                    }
+
+                                    BibleVerse verse = new BibleVerse();
+                                    verse.setChapter(chapter);
+                                    verse.setVerseNumber(verseNumber);
+                                    verse.setVerseText(
+                                            verseData.path("text")
+                                                    .stringValue()
+                                    );
+
+                                    verseRepository.save(verse);
+                                    chapterImported++;
+                                }
+
+                                return new int[]{
+                                        chapterImported,
+                                        chapterSkipped
+                                };
+                            }
+                    );
+
+                    if (chapterCounts != null) {
+                        imported += chapterCounts[0];
+                        skipped += chapterCounts[1];
+                    }
+
+                    chaptersProcessed++;
+
+                    if (chaptersProcessed % 25 == 0) {
+                        System.out.println(
+                                "Progress: " + chaptersProcessed
+                                        + " chapters processed; "
+                                        + imported + " verses imported; "
+                                        + skipped + " verses skipped."
                         );
-
-                        verseRepository.save(verse);
-
-                        imported++;
                     }
                 }
             }
-        }
 
-        System.out.println("KJV import completed.");
-        System.out.println("Verses imported: " + imported);
-        System.out.println("Verses skipped: " + skipped);
-        System.out.println(
-                "Total verses processed: " + (imported + skipped)
-        );
+            System.out.println("KJV import completed.");
+            System.out.println(
+                    "Chapters processed: " + chaptersProcessed
+            );
+            System.out.println("Verses imported: " + imported);
+            System.out.println("Verses skipped: " + skipped);
+            System.out.println(
+                    "Total verses processed: " + (imported + skipped)
+            );
+        }
     }
 }
