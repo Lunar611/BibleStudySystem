@@ -12,10 +12,12 @@ public class CorsConfig {
     @Bean
     public WebMvcConfigurer corsConfigurer() {
         return new WebMvcConfigurer() {
+
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/api/**")
                         .allowedOrigins(
+                                "http://localhost:5173",
                                 "https://word-and-wisdom.onrender.com"
                         )
                         .allowedMethods(
@@ -27,6 +29,7 @@ public class CorsConfig {
                                 "OPTIONS"
                         )
                         .allowedHeaders("*")
+                        .allowCredentials(false)
                         .maxAge(3600);
             }
         };
