@@ -1,3 +1,4 @@
+
 package com.bible.bible_api.controller;
 
 import com.bible.bible_api.dto.BibleSearchPageResponse;
@@ -17,7 +18,10 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = {
+        "http://localhost:5173",
+        "https://word-and-wisdom.onrender.com"
+})
 public class BibleController {
 
     private final BibleService bibleService;
@@ -70,7 +74,6 @@ public class BibleController {
     }
 
     // GET /api/search?translation=KJV&query=love
-
     @GetMapping("/search")
     public BibleSearchPageResponse searchVerses(
             @RequestParam(defaultValue = "KJV") String translation,
@@ -89,5 +92,4 @@ public class BibleController {
                 size
         );
     }
-
 }
