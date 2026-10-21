@@ -2091,6 +2091,11 @@ h1 {
 .selection-toolbar-cancel { border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 5px 7px; }
 .selection-toolbar-cancel:hover { color: var(--text); }
 .dark-mode .selection-highlight-toolbar { background: var(--surface-soft); }
+/* Keep saved text highlights readable against the dark reading surface. */
+.dark-mode .text-highlight-yellow { background-color: #62552b !important; color: #f7f4e8 !important; }
+.dark-mode .text-highlight-green { background-color: #31553b !important; color: #f7f4e8 !important; }
+.dark-mode .text-highlight-blue { background-color: #304b66 !important; color: #f7f4e8 !important; }
+.dark-mode .text-highlight-pink { background-color: #603b49 !important; color: #f7f4e8 !important; }
 @media (max-width: 620px) {
   .selection-highlight-toolbar { position: sticky; bottom: 8px; gap: 10px; padding: 12px; }
   .selection-toolbar-copy { flex-basis: 100%; }

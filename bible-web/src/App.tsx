@@ -97,10 +97,10 @@ type VerseHighlight = {
 type PendingTextSelection = { key: string; verseNumber: number; verseText: string; start: number; end: number }
 
 const HIGHLIGHT_COLORS: { value: HighlightColor; label: string; hex: string }[] = [
-  { value: 'yellow', label: 'Yellow', hex: '#fff0a8' },
-  { value: 'green', label: 'Green', hex: '#c9efcf' },
-  { value: 'blue', label: 'Blue', hex: '#cce7ff' },
-  { value: 'pink', label: 'Pink', hex: '#ffd6e4' },
+  { value: 'yellow', label: 'Soft yellow', hex: '#f5edbd' },
+  { value: 'green', label: 'Soft green', hex: '#dcebd8' },
+  { value: 'blue', label: 'Soft blue', hex: '#dce8f5' },
+  { value: 'pink', label: 'Soft pink', hex: '#f2dfe6' },
 ]
 const BUILT_IN_TAGS = ['Faith', 'Hope', 'Prayer', 'Wisdom']
 
@@ -526,22 +526,52 @@ function App() {
   function captureSelectedText(verse: Verse, textElement: HTMLSpanElement) {
     const selection = window.getSelection()
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return
+
     const range = selection.getRangeAt(0)
+    // Only capture a selection fully contained in this verse. Do not clear an
+    // existing pending selection just because another event fires elsewhere.
     if (!textElement.contains(range.startContainer) || !textElement.contains(range.endContainer)) return
+
     const beforeRange = range.cloneRange()
     beforeRange.selectNodeContents(textElement)
     beforeRange.setEnd(range.startContainer, range.startOffset)
+
     const start = beforeRange.toString().length
     const selectedText = range.toString()
+    const domText = textElement.textContent ?? ''
     const end = start + selectedText.length
-    if (!selectedText.trim() || end <= start) return
+
+    // The DOM contains nested spans/marks, so compare against its flattened text
+    // rather than requiring browser selection text to exactly match a JS slice.
+    // This avoids rejecting valid selections in already-highlighted text.
+    if (!selectedText.trim() || end <= start || domText.length !== verse.verseText.length) return
+
     setPendingTextSelection({
       key: getVerseKey(translation, book, chapter, verse.verseNumber),
       verseNumber: verse.verseNumber,
       verseText: verse.verseText,
-      start,
-      end,
+      start: Math.max(0, Math.min(start, verse.verseText.length)),
+      end: Math.max(0, Math.min(end, verse.verseText.length)),
     })
+  }
+
+  function scheduleCaptureSelectedText(verse: Verse, textElement: HTMLSpanElement, delay = 40) {
+    // Android/iOS PWAs can update the native text selection after touchend.
+    // A short delay lets the browser finish that update before we read it.
+    window.setTimeout(() => captureSelectedText(verse, textElement), delay)
+  }
+
+  function getHighlightHex(color: HighlightColor) {
+    if (darkMode) {
+      const darkColors: Record<HighlightColor, string> = {
+        yellow: '#62552b',
+        green: '#31553b',
+        blue: '#304b66',
+        pink: '#603b49',
+      }
+      return darkColors[color]
+    }
+    return HIGHLIGHT_COLORS.find((item) => item.value === color)?.hex ?? '#f5edbd'
   }
 
   function saveSelectedTextHighlight(color: HighlightColor) {
@@ -1430,14 +1460,13 @@ function App() {
                   ) : (
                     <div className="highlight-list">
                       {highlights.filter((item) => (highlightFilterColor === 'all' || item.color === highlightFilterColor) && (highlightFilterTag === 'all' || (highlightFilterTag === 'untagged' ? item.tags.length === 0 : item.tags.includes(highlightFilterTag)))).sort((a, b) => a.book.localeCompare(b.book) || a.chapterNumber - b.chapterNumber || a.verseNumber - b.verseNumber).map((item) => {
-                        const color = HIGHLIGHT_COLORS.find((option) => option.value === item.color) ?? HIGHLIGHT_COLORS[0]
                         return (
                           <article className="highlight-card" key={item.key}>
                             <div className="highlight-card-top">
                               <button type="button" className="saved-verse-reference" onClick={() => openHighlightedVerse(item)}>{item.book} {item.chapterNumber}:{item.verseNumber} <span>· {item.translation}</span></button>
                               <button type="button" className="remove-saved-verse" onClick={() => removeHighlight(item.key)}>Remove</button>
                             </div>
-                            <button type="button" className="highlight-verse-text" style={{ backgroundColor: color.hex }} onClick={() => openHighlightedVerse(item)}>{item.verseText}</button>
+                            <button type="button" className="highlight-verse-text" style={{ backgroundColor: getHighlightHex(item.color), color: darkMode ? '#f7f4e8' : '#302f27' }} onClick={() => openHighlightedVerse(item)}>{item.verseText}</button>
                             <div className="highlight-card-color-row"><span>Highlight color</span><div className="highlight-color-options">{HIGHLIGHT_COLORS.map((option) => <button key={option.value} type="button" title={option.label} aria-label={`Set ${item.book} ${item.chapterNumber}:${item.verseNumber} highlight to ${option.label}`} aria-pressed={item.color === option.value} className={`highlight-color-button ${item.color === option.value ? 'is-selected' : ''}`} style={{ backgroundColor: option.hex }} onClick={() => setHighlights((current) => current.map((entry) => entry.key === item.key ? { ...entry, color: option.value } : entry))} />)}</div></div>
                             <div className="highlight-tags"><span className="highlight-tags-label">Tags</span>{[...BUILT_IN_TAGS, ...customTags].map((tag) => <label className={`highlight-tag-option ${item.tags.includes(tag) ? 'is-checked' : ''}`} key={tag}><input type="checkbox" checked={item.tags.includes(tag)} onChange={() => toggleHighlightTag(item.key, tag)} />{tag}</label>)}</div>
                           </article>
@@ -1766,11 +1795,11 @@ function App() {
                         <div className="verse-study-row" key={verse.id}>
                           <p className="verse">
                             <sup>{verse.verseNumber}</sup>
-                            <span className="verse-selectable-text" onMouseUp={(event) => captureSelectedText(verse, event.currentTarget)} onTouchEnd={(event) => captureSelectedText(verse, event.currentTarget)}>
+                            <span className="verse-selectable-text" onMouseUp={(event) => scheduleCaptureSelectedText(verse, event.currentTarget, 0)} onTouchEnd={(event) => scheduleCaptureSelectedText(verse, event.currentTarget, 80)}>
                               {segments.map((segment, index) => {
                                 const color = segment.color ? HIGHLIGHT_COLORS.find((item) => item.value === segment.color) : undefined
                                 return color
-                                  ? <mark key={`${segment.start}-${segment.end}-${index}`} className={`text-highlight text-highlight-${segment.color}`} style={{ backgroundColor: color.hex }}>{segment.text}</mark>
+                                  ? <mark key={`${segment.start}-${segment.end}-${index}`} className={`text-highlight text-highlight-${segment.color}`} style={{ backgroundColor: getHighlightHex(color.value), color: darkMode ? '#f7f4e8' : 'inherit' }}>{segment.text}</mark>
                                   : <span key={`${segment.start}-${segment.end}-${index}`}>{segment.text}</span>
                               })}
                             </span>
