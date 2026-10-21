@@ -1,4 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import {
+  getOfflineChapter,
+  getOfflineChapterCount,
+  getOfflineChapters,
+  saveOfflineChapter,
+} from './offlineBible'
 import './App.css'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
@@ -98,6 +104,32 @@ const HIGHLIGHT_COLORS: { value: HighlightColor; label: string; hex: string }[] 
 ]
 const BUILT_IN_TAGS = ['Faith', 'Hope', 'Prayer', 'Wisdom']
 
+const BIBLE_BOOK_ORDER = [
+  'Genesis', 'Exodus', 'Leviticus', 'Numbers', 'Deuteronomy', 'Joshua',
+  'Judges', 'Ruth', '1 Samuel', '2 Samuel', '1 Kings', '2 Kings',
+  '1 Chronicles', '2 Chronicles', 'Ezra', 'Nehemiah', 'Esther', 'Job',
+  'Psalms', 'Proverbs', 'Ecclesiastes', 'Song of Solomon', 'Isaiah',
+  'Jeremiah', 'Lamentations', 'Ezekiel', 'Daniel', 'Hosea', 'Joel',
+  'Amos', 'Obadiah', 'Jonah', 'Micah', 'Nahum', 'Habakkuk', 'Zephaniah',
+  'Haggai', 'Zechariah', 'Malachi', 'Matthew', 'Mark', 'Luke', 'John',
+  'Acts', 'Romans', '1 Corinthians', '2 Corinthians', 'Galatians',
+  'Ephesians', 'Philippians', 'Colossians', '1 Thessalonians',
+  '2 Thessalonians', '1 Timothy', '2 Timothy', 'Titus', 'Philemon',
+  'Hebrews', 'James', '1 Peter', '2 Peter', '1 John', '2 John',
+  '3 John', 'Jude', 'Revelation',
+]
+
+function offlineBooksFromChapters(chapters: Awaited<ReturnType<typeof getOfflineChapters>>): Book[] {
+  const names = [...new Set(chapters.map((item) => item.book))]
+  names.sort((a, b) => {
+    const aIndex = BIBLE_BOOK_ORDER.indexOf(a)
+    const bIndex = BIBLE_BOOK_ORDER.indexOf(b)
+    return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) -
+      (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex)
+  })
+  return names.map((name, index) => ({ id: index + 1, name }))
+}
+
 function loadHighlights(): VerseHighlight[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(VERSE_HIGHLIGHTS_KEY) ?? '[]')
@@ -174,6 +206,11 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [darkMode, setDarkMode] = useState(false)
 
+  const [offlineChapterCount, setOfflineChapterCount] = useState(0)
+  const [downloadingBible, setDownloadingBible] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const [downloadMessage, setDownloadMessage] = useState('')
+
   // Verse range selection
   const [verseFrom, setVerseFrom] = useState('')
   const [verseTo, setVerseTo] = useState('')
@@ -208,6 +245,12 @@ function App() {
   const [saveReference, setSaveReference] = useState('')
   const [saveReferenceError, setSaveReferenceError] = useState('')
   const [saveReferenceStatus, setSaveReferenceStatus] = useState('')
+
+  useEffect(() => {
+    getOfflineChapterCount()
+      .then(setOfflineChapterCount)
+      .catch(() => setOfflineChapterCount(0))
+  }, [])
 
   // Persist verse highlights and custom tags separately from bookmarks and reading progress.
   useEffect(() => {
@@ -282,8 +325,24 @@ function App() {
           setBook(defaultBook.name)
         }
       } catch {
-        if (!cancelled) {
-          setError('Could not load translations or Bible books.')
+        if (cancelled) return
+
+        try {
+          const cachedChapters = await getOfflineChapters()
+          if (cachedChapters.length === 0) {
+            setError('Could not load translations or Bible books. Connect to the internet to download the Bible for offline use.')
+            return
+          }
+
+          setTranslations([{ id: 1, abbreviation: 'KJV', name: 'King James Version' }])
+          const offlineBooks = offlineBooksFromChapters(cachedChapters)
+          setBooks(offlineBooks)
+          setTranslation('KJV')
+          setBook(offlineBooks.find((item) => item.name === 'Genesis')?.name ?? offlineBooks[0].name)
+          setDownloadMessage('Offline mode: using Bible chapters saved on this device.')
+          setError('')
+        } catch {
+          setError('Could not load translations or Bible books. Connect to the internet to download the Bible for offline use.')
         }
       }
     }
@@ -330,7 +389,23 @@ function App() {
         if (err instanceof Error && err.name === 'AbortError') return
 
         if (!controller.signal.aborted) {
-          setError('Could not load the chapter list for this book.')
+          try {
+            const cached = await getOfflineChapters()
+            const cachedForBook = cached.filter(
+              (item) => item.translation === translation && item.book === book,
+            )
+            if (cachedForBook.length > 0) {
+              const count = Math.max(...cachedForBook.map((item) => item.chapterNumber))
+              setChapterCount(count)
+              if (chapter > count) setChapter(count)
+              setError('')
+            } else {
+              setChapterCount(0)
+              setError(`No offline chapters are saved for ${book}. Connect to the internet to load this book.`)
+            }
+          } catch {
+            setError('Could not load the chapter list for this book.')
+          }
         }
       }
     }
@@ -392,15 +467,40 @@ function App() {
           throw new Error('The server did not return a verse list.')
         }
 
-        setVerses(versesData as Verse[])
+        const validVerses = versesData as Verse[]
+        setVerses(validVerses)
+        await saveOfflineChapter({
+          key: `${translation}|${book}|${chapter}`,
+          translation,
+          book,
+          chapterNumber: chapter,
+          verses: validVerses,
+          savedAt: Date.now(),
+        }).catch(() => undefined)
+        getOfflineChapterCount().then(setOfflineChapterCount).catch(() => undefined)
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return
 
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'An unexpected error occurred.',
-        )
+        try {
+          const cachedChapter = await getOfflineChapter(translation, book, chapter)
+          if (cachedChapter && cachedChapter.verses.length > 0) {
+            setVerses(cachedChapter.verses)
+            setError('')
+            setDownloadMessage('Offline mode: displaying a chapter saved on this device.')
+          } else {
+            setError(
+              err instanceof Error
+                ? `${err.message} This chapter is not saved for offline use.`
+                : 'An unexpected error occurred. This chapter is not saved for offline use.',
+            )
+          }
+        } catch {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'An unexpected error occurred.',
+          )
+        }
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false)
@@ -568,25 +668,35 @@ function App() {
     }
 
     try {
-      const chapterResponse = await apiFetch(
-        `/api/translations/${encodeURIComponent(translation)}` +
-          `/books/${encodeURIComponent(matchingBook.name)}/chapters/${chapterNumber}`,
-      )
+      let chapterVerses: Verse[]
 
-      if (!chapterResponse.ok) {
-        throw new Error(`${matchingBook.name} ${chapterNumber} was not found in ${translation}.`)
-      }
+      try {
+        const chapterResponse = await apiFetch(
+          `/api/translations/${encodeURIComponent(translation)}` +
+            `/books/${encodeURIComponent(matchingBook.name)}/chapters/${chapterNumber}`,
+        )
 
-      const chapterData: Chapter = await chapterResponse.json()
-      const versesResponse = await apiFetch(`/api/chapters/${chapterData.id}/verses`)
+        if (!chapterResponse.ok) {
+          throw new Error(`${matchingBook.name} ${chapterNumber} was not found in ${translation}.`)
+        }
 
-      if (!versesResponse.ok) {
-        throw new Error('Could not retrieve the verses for that reference.')
-      }
+        const chapterData: Chapter = await chapterResponse.json()
+        const versesResponse = await apiFetch(`/api/chapters/${chapterData.id}/verses`)
 
-      const chapterVerses: Verse[] = await versesResponse.json()
-      if (!Array.isArray(chapterVerses) || chapterVerses.length === 0) {
-        throw new Error('No verses were found for that chapter.')
+        if (!versesResponse.ok) {
+          throw new Error('Could not retrieve the verses for that reference.')
+        }
+
+        chapterVerses = await versesResponse.json()
+        if (!Array.isArray(chapterVerses) || chapterVerses.length === 0) {
+          throw new Error('No verses were found for that chapter.')
+        }
+      } catch (networkError) {
+        const cachedChapter = await getOfflineChapter(translation, matchingBook.name, chapterNumber)
+        if (!cachedChapter || cachedChapter.verses.length === 0) {
+          throw networkError
+        }
+        chapterVerses = cachedChapter.verses
       }
 
       if (endVerse > chapterVerses.length) {
@@ -699,14 +809,53 @@ function App() {
       setTotalPages(data.totalPages)
       setSearchPage(data.currentPage)
     } catch (err) {
-      setSearchResults([])
-      setTotalResults(0)
-      setTotalPages(0)
-      setSearchError(
-        err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred during search.',
-      )
+      try {
+        const cachedChapters = await getOfflineChapters()
+        if (cachedChapters.length === 0) throw err
+
+        const normalizedKeyword = keyword.toLocaleLowerCase()
+        const terms = normalizedKeyword.split(/\\s+/).filter(Boolean)
+        const matches: BibleSearchResult[] = cachedChapters
+          .filter((item) => item.translation === translation)
+          .filter((item) => !searchBook || item.book === searchBook)
+          .flatMap((item) => item.verses
+            .filter((verse) => {
+              const text = verse.verseText.toLocaleLowerCase()
+              return exactPhrase
+                ? text.includes(normalizedKeyword)
+                : terms.every((term) => text.includes(term))
+            })
+            .map((verse) => ({
+              id: verse.id,
+              translation: item.translation,
+              book: item.book,
+              chapterNumber: item.chapterNumber,
+              verseNumber: verse.verseNumber,
+              verseText: verse.verseText,
+            })),
+          )
+          .sort((a, b) => {
+            const bookDifference = BIBLE_BOOK_ORDER.indexOf(a.book) - BIBLE_BOOK_ORDER.indexOf(b.book)
+            return bookDifference || a.chapterNumber - b.chapterNumber || a.verseNumber - b.verseNumber
+          })
+
+        const start = pageNumber * 20
+        setSearchResults(matches.slice(start, start + 20))
+        setTotalResults(matches.length)
+        setTotalPages(Math.ceil(matches.length / 20))
+        setSearchPage(pageNumber)
+        setSearchError('')
+        setDownloadMessage('Offline search searches chapters downloaded to this device.')
+      } catch {
+        setSearchResults([])
+        setTotalResults(0)
+        setTotalPages(0)
+        setSearchError(
+          err instanceof Error
+            ? err.message
+            : 'An unexpected error occurred during search.',
+        )
+      }
     } finally {
       setSearchLoading(false)
     }
@@ -850,7 +999,23 @@ function App() {
       setChapter(data.length)
       setChapterInput(String(data.length))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Navigation failed.')
+      try {
+        const cached = await getOfflineChapters()
+        const cachedForBook = cached.filter(
+          (item) => item.translation === translation && item.book === previousBook.name,
+        )
+        if (cachedForBook.length > 0) {
+          const lastChapter = Math.max(...cachedForBook.map((item) => item.chapterNumber))
+          setBook(previousBook.name)
+          setChapter(lastChapter)
+          setChapterInput(String(lastChapter))
+          setError('')
+        } else {
+          setError(err instanceof Error ? err.message : 'Navigation failed.')
+        }
+      } catch {
+        setError(err instanceof Error ? err.message : 'Navigation failed.')
+      }
     }
   }
 
@@ -906,6 +1071,98 @@ function App() {
     chapter >= chapterCount &&
     bookIndex === books.length - 1
 
+  async function downloadBibleForOffline() {
+    if (downloadingBible) return
+    if (!navigator.onLine) {
+      setDownloadMessage('Connect to the internet before downloading the Bible.')
+      return
+    }
+
+    setDownloadingBible(true)
+    setDownloadProgress(0)
+    setDownloadMessage('Preparing the KJV Bible download...')
+
+    try {
+      const translationCode = 'KJV'
+      const bookResponse = await apiFetch('/api/books')
+      if (!bookResponse.ok) throw new Error('Could not retrieve the Bible book list.')
+
+      const bookData: Book[] = await bookResponse.json()
+      if (!Array.isArray(bookData) || bookData.length === 0) {
+        throw new Error('The server returned no Bible books.')
+      }
+
+      const chapterReferences: { book: string; chapterNumber: number }[] = []
+      for (const item of bookData) {
+        const response = await apiFetch(
+          `/api/translations/${encodeURIComponent(translationCode)}` +
+            `/books/${encodeURIComponent(item.name)}/chapters`,
+        )
+        if (!response.ok) throw new Error(`Could not retrieve chapters for ${item.name}.`)
+        const chapterList: ChapterSummary[] = await response.json()
+        if (!Array.isArray(chapterList)) throw new Error(`Invalid chapter list for ${item.name}.`)
+        for (const entry of chapterList) {
+          chapterReferences.push({ book: item.name, chapterNumber: entry.chapterNumber })
+        }
+      }
+
+      if (chapterReferences.length === 0) throw new Error('No chapters were found to download.')
+
+      let nextIndex = 0
+      let completed = 0
+      const worker = async () => {
+        while (true) {
+          const index = nextIndex++
+          if (index >= chapterReferences.length) return
+          if (!navigator.onLine) throw new Error('Internet connection lost. Reconnect and try the download again.')
+
+          const item = chapterReferences[index]
+          const chapterResponse = await apiFetch(
+            `/api/translations/${encodeURIComponent(translationCode)}` +
+              `/books/${encodeURIComponent(item.book)}/chapters/${item.chapterNumber}`,
+          )
+          if (!chapterResponse.ok) throw new Error(`Could not download ${item.book} ${item.chapterNumber}.`)
+
+          const chapterData: Chapter = await chapterResponse.json()
+          const versesResponse = await apiFetch(`/api/chapters/${chapterData.id}/verses`)
+          if (!versesResponse.ok) throw new Error(`Could not download verses for ${item.book} ${item.chapterNumber}.`)
+
+          const verseData: Verse[] = await versesResponse.json()
+          if (!Array.isArray(verseData) || verseData.length === 0) {
+            throw new Error(`No verses were returned for ${item.book} ${item.chapterNumber}.`)
+          }
+
+          await saveOfflineChapter({
+            key: `${translationCode}|${item.book}|${item.chapterNumber}`,
+            translation: translationCode,
+            book: item.book,
+            chapterNumber: item.chapterNumber,
+            verses: verseData,
+            savedAt: Date.now(),
+          })
+
+          completed++
+          setDownloadProgress(Math.round((completed / chapterReferences.length) * 100))
+          setDownloadMessage(`Downloading KJV: ${completed} of ${chapterReferences.length} chapters`)
+        }
+      }
+
+      await Promise.all(Array.from({ length: 4 }, () => worker()))
+      const count = await getOfflineChapterCount()
+      setOfflineChapterCount(count)
+      setTranslations([{ id: 1, abbreviation: 'KJV', name: 'King James Version' }])
+      setBooks(bookData)
+      setTranslation('KJV')
+      setDownloadProgress(100)
+      setDownloadMessage(`Download complete! ${count} chapters are saved on this device.`)
+    } catch (err) {
+      setDownloadMessage(err instanceof Error ? err.message : 'The Bible download failed.')
+      getOfflineChapterCount().then(setOfflineChapterCount).catch(() => undefined)
+    } finally {
+      setDownloadingBible(false)
+    }
+  }
+
   return (
     <main className={`app ${darkMode ? 'dark-mode' : ''}`}>
       <header className="topbar">
@@ -916,6 +1173,16 @@ function App() {
 
         <div className="header-actions">
           <span className="header-caption">BIBLE READING &amp; STUDY</span>
+
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={downloadBibleForOffline}
+            disabled={downloadingBible}
+            title="Save the KJV Bible to this device for offline use"
+          >
+            {downloadingBible ? `Downloading ${downloadProgress}%` : 'Download Bible'}
+          </button>
 
           <button
             className="theme-toggle"
@@ -929,6 +1196,21 @@ function App() {
           </button>
         </div>
       </header>
+
+      {(downloadMessage || offlineChapterCount > 0) && (
+        <section className="offline-download-status" aria-live="polite">
+          <div>
+            <strong>Offline Bible</strong>
+            <span>{offlineChapterCount} chapters saved on this device</span>
+          </div>
+          {downloadMessage && <p>{downloadMessage}</p>}
+          {downloadingBible && (
+            <progress value={downloadProgress} max={100}>
+              {downloadProgress}%
+            </progress>
+          )}
+        </section>
+      )}
 
       <div className="reader-layout" id="top">
         <aside className="sidebar">
@@ -1608,4 +1890,3 @@ function App() {
 }
 
 export default App
-
